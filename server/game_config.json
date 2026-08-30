@@ -1,0 +1,10 @@
+{
+  "games": {
+    "default": {
+      "type": "time",
+      "price_per_minute": 0.10,
+      "price_per_round": 1.00,
+      "default_rounds": 2
+    }
+  }
+}

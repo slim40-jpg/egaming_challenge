@@ -1,0 +1,50 @@
+{
+    "pcs": [
+        {
+            "id": "pc01",
+            "name": "PC-01",
+            "mac_address": "AA-BB-CC-DD-EE-01",
+            "ip_address": "192.168.100.10",
+            "row": 0,
+            "col": 0,
+            "type": "gaming",
+            "monitor": "27 inch 144Hz",
+            "gpu": "RTX 4070",
+            "cpu": "Intel i7-13700K",
+            "ram": "32GB DDR5"
+        },
+        {
+            "id": "pc02",
+            "name": "PC-02",
+            "mac_address": "AA-BB-CC-DD-EE-02",
+            "ip_address": "192.168.100.11",
+            "row": 0,
+            "col": 1,
+            "type": "gaming",
+            "monitor": "27 inch 144Hz",
+            "gpu": "RTX 4070",
+            "cpu": "Intel i7-13700K",
+            "ram": "32GB DDR5"
+        },
+        {
+            "id": "pc03",
+            "name": "PC-03",
+            "mac_address": "AA-BB-CC-DD-EE-03",
+            "ip_address": "192.168.100.12",
+            "row": 0,
+            "col": 2,
+            "type": "gaming",
+            "monitor": "27 inch 144Hz",
+            "gpu": "RTX 4080",
+            "cpu": "Intel i9-13900K",
+            "ram": "64GB DDR5"
+        }
+    ],
+    "settings": {
+        "center_name": "Ninety Gaming House",
+        "rows": 3,
+        "cols": 5,
+        "price_per_minute": 0.10,
+        "currency": "$"
+    }
+}

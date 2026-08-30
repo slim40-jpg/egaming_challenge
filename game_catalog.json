@@ -1,0 +1,72 @@
+[
+  {
+    "id": 1,
+    "name": "Counter-Strike 2",
+    "category": "FPS",
+    "icon": "\ud83c\udfaf",
+    "executable": "cs2.exe"
+  },
+  {
+    "id": 2,
+    "name": "EA FC 24",
+    "category": "Sports",
+    "icon": "\u26bd",
+    "executable": "fifa24.exe"
+  },
+  {
+    "id": 3,
+    "name": "Valorant",
+    "category": "FPS",
+    "icon": "\ud83d\udd2b",
+    "executable": "valorant.exe"
+  },
+  {
+    "id": 4,
+    "name": "League of Legends",
+    "category": "MOBA",
+    "icon": "\ud83c\udfc6",
+    "executable": "League of Legends.exe"
+  },
+  {
+    "id": 5,
+    "name": "Fortnite",
+    "category": "Battle Royale",
+    "icon": "\ud83c\udfae",
+    "executable": "fortnite.exe"
+  },
+  {
+    "id": 6,
+    "name": "Dota 2",
+    "category": "MOBA",
+    "icon": "\u2694\ufe0f",
+    "executable": "dota2.exe"
+  },
+  {
+    "id": 7,
+    "name": "Rocket League",
+    "category": "Sports",
+    "icon": "\ud83d\ude97",
+    "executable": "rocketleague.exe"
+  },
+  {
+    "id": 8,
+    "name": "MUGEN",
+    "category": "Fighting",
+    "icon": "\ud83d\udc4a",
+    "executable": "mugen.exe"
+  },
+  {
+    "id": 9,
+    "name": "Naruto Storm Revolution",
+    "category": "Fighting",
+    "icon": "\ud83d\udc09",
+    "executable": "NSUNSR.exe"
+  },
+  {
+    "id": 10,
+    "name": "Grand Theft Auto V",
+    "category": "Action",
+    "icon": "\ud83d\ude97",
+    "executable": "gta5.exe"
+  }
+]

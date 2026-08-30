@@ -1,73 +1,530 @@
 // ============================================================
-// FIXES FOR COMMON ERRORS
+// GAMING PC AGENT - CLEAN VERSION (NO ML)
 // ============================================================
 
-#define _WIN32_WINNT 0x0600     // Enables LockWorkStation
-#define _CRT_SECURE_NO_WARNINGS // Disables warnings about sprintf_s
+#define _WIN32_WINNT 0x0A00
+#define _CRT_SECURE_NO_WARNINGS
 
 // ============================================================
-// HEADER FILES - IMPORTANT: winsock2.h MUST come BEFORE windows.h!
+// HEADER FILES
 // ============================================================
 
-#include <winsock2.h> // MUST BE FIRST! (before windows.h)
-#include <ws2tcpip.h> // For modern networking functions
-#include <windows.h>  // Now windows.h is safe to include
-
-#include <iostream>   // For console output
-#include <string>     // For std::string
-#include <vector>     // For std::vector
-#include <thread>     // For std::thread
-#include <chrono>     // For std::chrono
-#include <atomic>     // For std::atomic
-#include <sstream>    // For std::stringstream
-#include <fstream>    // For std::ifstream
-#include <iphlpapi.h> // For IP Helper API
-#include <setupapi.h> // For SetupAPI (USB detection)
-#include <devguid.h>  // For device GUIDs
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <winsvc.h>
+#include <map>
+#include <iostream>
+#include <algorithm>
+#include <string>
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <atomic>
+#include <sstream>
+#include <fstream>
+#include <iphlpapi.h>
+#include <setupapi.h>
+#include <devguid.h>
 #include <cfgmgr32.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#include <tlhelp32.h>
+#include <psapi.h>
+#include <comdef.h>
+#include <Wbemidl.h>
 
-#pragma comment(lib, "ws2_32.lib")   // Winsock library - for networking
-#pragma comment(lib, "iphlpapi.lib") // IP Helper API - for network info
-#pragma comment(lib, "setupapi.lib") // Setup API - for USB detection
-#pragma comment(lib, "cfgmgr32.lib") // Configuration Manager - hardware info
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "cfgmgr32.lib")
 #pragma comment(lib, "pdh.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "psapi.lib")
+
+void LogMessage(const std::string &message);
+bool ContainsKeyword(const std::string &text, const std::vector<std::string> &keywords);
 
 // ============================================================
-// CONFIGURATION - Settings you can change
+// STRING CONVERSION HELPERS
 // ============================================================
 
-// The server URL (change this to your server's IP)
-const std::string SERVER_URL = "http://192.168.100.41:8000";
+std::string WCharToString(const WCHAR *wstr)
+{
+    if (!wstr)
+        return "";
+    int len = WideCharToMultiByte(CP_ACP, 0, wstr, -1, NULL, 0, NULL, NULL);
+    if (len <= 0)
+        return "";
+    std::vector<char> buffer(len);
+    WideCharToMultiByte(CP_ACP, 0, wstr, -1, buffer.data(), len, NULL, NULL);
+    return std::string(buffer.data());
+}
 
-// How often to send heartbeats (in milliseconds)
-const int HEARTBEAT_INTERVAL_MS = 10000; // 10 seconds
+std::string GetProcessExeName(const PROCESSENTRY32 &pe32)
+{
+#ifdef UNICODE
+    return WCharToString(pe32.szExeFile);
+#else
+    return std::string(pe32.szExeFile);
+#endif
+}
 
-// How often to check for USB changes (in milliseconds)
-const int USB_CHECK_INTERVAL_MS = 5000; // 5 seconds
-
-// How often to poll for commands (in milliseconds)
-const int COMMAND_POLL_INTERVAL_MS = 2000; // 2 seconds
+std::string GetModuleName(const MODULEENTRY32 &me32)
+{
+#ifdef UNICODE
+    return WCharToString(me32.szModule);
+#else
+    return std::string(me32.szModule);
+#endif
+}
 
 // ============================================================
-// GLOBAL STATE - The agent's current status
+// GAME DETECTOR CLASS
 // ============================================================
 
-std::string g_Hostname;            // This PC's name (e.g., "PC-GAMING-01")
-std::string g_Status = "online";   // "online", "in_session", "locked"
-std::atomic<bool> g_Running{true}; // Atomic = thread-safe flag to stop the agent
-std::string g_SessionUser = "";    // Who's currently using the PC
+class GameDetector
+{
+private:
+    std::vector<std::string> m_graphicsDlls;
+    std::vector<std::string> m_nonGameKeywords;
+    std::map<std::string, std::string> m_gameFriendlyNames;
+
+public:
+    GameDetector()
+    {
+        m_graphicsDlls = {
+            "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll",
+            "dxgi.dll", "vulkan-1.dll", "opengl32.dll",
+            "libcef.dll", "nvcuda.dll", "amd_ags_x64.dll"};
+
+        m_nonGameKeywords = {
+            "explorer", "chrome", "firefox", "edge", "opera",
+            "photoshop", "premiere", "after_effects", "blender",
+            "unity", "unreal", "visual_studio", "code",
+            "slack", "discord", "spotify", "vlc", "media_player",
+            "excel", "word", "powerpoint", "outlook",
+            "cmd", "powershell", "terminal", "git"};
+
+        m_gameFriendlyNames = {
+            {"cs2.exe", "Counter-Strike 2"},
+            {"csgo.exe", "Counter-Strike 2"},
+            {"fifa23.exe", "EA FC 24"},
+            {"fifa24.exe", "EA FC 24"},
+            {"valorant.exe", "Valorant"},
+            {"fortnite.exe", "Fortnite"},
+            {"mugen.exe", "MUGEN"},
+            {"dbz.exe", "Dragon Ball Z"},
+            {"NSUNSR.exe", "Naruto Storm Revolution"},
+            {"dota2.exe", "Dota 2"},
+            {"rocketleague.exe", "Rocket League"},
+            {"League of Legends.exe", "League of Legends"},
+            {"lol.exe", "League of Legends"},
+            {"gta5.exe", "GTA V"}};
+    }
+
+    std::string ToLower(const std::string &str)
+    {
+        std::string result = str;
+        std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+        return result;
+    }
+
+    std::string GetFriendlyGameName(const std::string &exeName)
+    {
+        auto it = m_gameFriendlyNames.find(exeName);
+        if (it != m_gameFriendlyNames.end())
+        {
+            return it->second;
+        }
+        return CleanGameName(exeName);
+    }
+
+    bool IsExeRegisteredAsGame(const std::string &exeName)
+    {
+        HKEY hKey;
+        const char *subkey = "Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR\\AppCaptureX";
+
+        if (RegOpenKeyExA(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+        {
+            subkey = "Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR";
+            if (RegOpenKeyExA(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+            {
+                return false;
+            }
+        }
+
+        DWORD index = 0;
+        char valueName[256];
+        DWORD valueNameSize = 256;
+        bool found = false;
+
+        while (RegEnumValueA(hKey, index, valueName, &valueNameSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS)
+        {
+            std::string registeredExe = valueName;
+            if (ToLower(registeredExe).find(ToLower(exeName)) != std::string::npos)
+            {
+                found = true;
+                break;
+            }
+            index++;
+            valueNameSize = 256;
+        }
+
+        RegCloseKey(hKey);
+        return found;
+    }
+
+    bool IsProcessAGame(DWORD processID)
+    {
+        HANDLE hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processID);
+        if (hModuleSnap == INVALID_HANDLE_VALUE)
+            return false;
+
+        MODULEENTRY32 me32;
+        me32.dwSize = sizeof(MODULEENTRY32);
+
+        bool isGame = false;
+        if (Module32First(hModuleSnap, &me32))
+        {
+            do
+            {
+                std::string moduleName = GetModuleName(me32);
+                std::string moduleLower = ToLower(moduleName);
+
+                for (const auto &dll : m_graphicsDlls)
+                {
+                    if (moduleLower == dll)
+                    {
+                        isGame = true;
+                        break;
+                    }
+                }
+            } while (Module32Next(hModuleSnap, &me32) && !isGame);
+        }
+
+        CloseHandle(hModuleSnap);
+        return isGame;
+    }
+
+    bool IsProcessProbablyGame(const std::string &processName)
+    {
+        std::string lowerName = ToLower(processName);
+
+        for (const auto &keyword : m_nonGameKeywords)
+        {
+            if (lowerName.find(keyword) != std::string::npos)
+            {
+                return false;
+            }
+        }
+
+        std::vector<std::string> gamePatterns = {
+            "game", "player", "play", "client", "server",
+            "win64", "win32", "x64", "x86", "release"};
+
+        for (const auto &pattern : gamePatterns)
+        {
+            if (lowerName.find(pattern) != std::string::npos)
+            {
+                return true;
+            }
+        }
+
+        if (lowerName.length() < 20 && lowerName.find(".exe") != std::string::npos)
+        {
+            std::string nameWithoutExt = lowerName.substr(0, lowerName.find(".exe"));
+            std::vector<std::string> commonWords = {"setup", "install", "config", "help", "readme"};
+            for (const auto &word : commonWords)
+            {
+                if (nameWithoutExt == word)
+                    return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    bool IsProcessDefinitelyGame(DWORD processID)
+    {
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+        if (!hProcess)
+            return false;
+
+        char processName[MAX_PATH];
+        DWORD size = MAX_PATH;
+        if (!QueryFullProcessImageNameA(hProcess, 0, processName, &size))
+        {
+            CloseHandle(hProcess);
+            return false;
+        }
+
+        CloseHandle(hProcess);
+
+        std::string fullPath(processName);
+        size_t lastSlash = fullPath.find_last_of("\\");
+        std::string exeName = (lastSlash != std::string::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
+
+        if (IsExeRegisteredAsGame(exeName))
+        {
+            return true;
+        }
+
+        if (IsProcessAGame(processID))
+        {
+            return true;
+        }
+
+        if (IsProcessProbablyGame(exeName))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    std::string CleanGameName(const std::string &exeName)
+    {
+        std::string game = exeName;
+
+        size_t extPos = game.find(".exe");
+        if (extPos != std::string::npos)
+        {
+            game = game.substr(0, extPos);
+        }
+
+        std::vector<std::string> suffixes = {
+            "-Shipping", "-Client", "-Server", "_Win64", "_x64",
+            "Win64", "Win32", "x64", "x86", "Release", "Debug"};
+        for (const auto &suffix : suffixes)
+        {
+            size_t pos = game.find(suffix);
+            if (pos != std::string::npos)
+            {
+                game = game.substr(0, pos);
+            }
+        }
+
+        size_t lastSlash = game.find_last_of("\\");
+        if (lastSlash != std::string::npos)
+        {
+            game = game.substr(lastSlash + 1);
+        }
+
+        return game;
+    }
+
+    std::string GetCurrentGameName()
+    {
+        HWND hwnd = GetForegroundWindow();
+        if (hwnd)
+        {
+            DWORD pid;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (IsProcessDefinitelyGame(pid))
+            {
+                HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+                if (hProcess)
+                {
+                    char processName[MAX_PATH];
+                    DWORD size = MAX_PATH;
+                    if (QueryFullProcessImageNameA(hProcess, 0, processName, &size))
+                    {
+                        CloseHandle(hProcess);
+                        std::string fullPath(processName);
+                        size_t lastSlash = fullPath.find_last_of("\\");
+                        std::string exeName = (lastSlash != std::string::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
+                        return GetFriendlyGameName(exeName);
+                    }
+                    CloseHandle(hProcess);
+                }
+            }
+        }
+
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot == INVALID_HANDLE_VALUE)
+        {
+            return "none";
+        }
+
+        PROCESSENTRY32 pe32;
+        pe32.dwSize = sizeof(PROCESSENTRY32);
+
+        if (Process32First(hSnapshot, &pe32))
+        {
+            do
+            {
+                if (pe32.th32ProcessID == 0 || pe32.th32ProcessID == 4)
+                    continue;
+
+                if (IsProcessDefinitelyGame(pe32.th32ProcessID))
+                {
+                    std::string exeName = GetProcessExeName(pe32);
+                    CloseHandle(hSnapshot);
+                    return GetFriendlyGameName(exeName);
+                }
+            } while (Process32Next(hSnapshot, &pe32));
+        }
+
+        CloseHandle(hSnapshot);
+        return "none";
+    }
+};
+
+GameDetector g_GameDetector;
 
 // ============================================================
-// HELPER FUNCTIONS - Small utilities used everywhere
+// CONTAINS KEYWORD
 // ============================================================
 
-/**
- * Gets the computer's hostname.
- * Why: We need a unique identifier for this PC so the server knows which one we are.
- * Example: "PC-GAMING-01" or "DESKTOP-ABC123"
- */
+bool ContainsKeyword(const std::string &text, const std::vector<std::string> &keywords)
+{
+    std::string lowerText = g_GameDetector.ToLower(text);
+    for (const auto &keyword : keywords)
+    {
+        if (lowerText.find(g_GameDetector.ToLower(keyword)) != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+std::string SERVER_URL;
+const int DISCOVERY_PORT = 9000;
+const int HEARTBEAT_INTERVAL_MS = 10000;
+const int COMMAND_POLL_INTERVAL_MS = 2000;
+const int TELEMETRY_INTERVAL_MS = 2000;
+
+std::string g_Hostname;
+std::string g_Status = "online";
+std::atomic<bool> g_Running{true};
+std::string g_SessionUser = "";
+
+SERVICE_STATUS_HANDLE g_hServiceStatus = NULL;
+SERVICE_STATUS g_ServiceStatus;
+std::thread g_ServiceThread;
+
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+
+std::string GetMACAddress()
+{
+    PIP_ADAPTER_INFO pAdapterInfo = NULL;
+    ULONG ulOutBufLen = sizeof(IP_ADAPTER_INFO);
+
+    pAdapterInfo = (IP_ADAPTER_INFO *)malloc(sizeof(IP_ADAPTER_INFO));
+    if (pAdapterInfo == NULL)
+    {
+        return "00-00-00-00-00-00";
+    }
+
+    DWORD dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen);
+    if (dwRetVal == ERROR_BUFFER_OVERFLOW)
+    {
+        free(pAdapterInfo);
+        pAdapterInfo = (IP_ADAPTER_INFO *)malloc(ulOutBufLen);
+        if (pAdapterInfo == NULL)
+        {
+            return "00-00-00-00-00-00";
+        }
+        dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen);
+    }
+
+    if (dwRetVal != NO_ERROR)
+    {
+        free(pAdapterInfo);
+        return "00-00-00-00-00-00";
+    }
+
+    PIP_ADAPTER_INFO pAdapter = pAdapterInfo;
+    std::string macAddress = "00-00-00-00-00-00";
+
+    while (pAdapter)
+    {
+        std::string description = pAdapter->Description;
+        if (description.find("Virtual") == std::string::npos &&
+            description.find("Loopback") == std::string::npos &&
+            description.find("VPN") == std::string::npos &&
+            description.find("TAP") == std::string::npos &&
+            description.find("Tailscale") == std::string::npos &&
+            description.find("VMware") == std::string::npos &&
+            description.find("VirtualBox") == std::string::npos &&
+            pAdapter->AddressLength == 6)
+        {
+            char mac[18];
+            sprintf_s(mac, sizeof(mac), "%02X-%02X-%02X-%02X-%02X-%02X",
+                      pAdapter->Address[0], pAdapter->Address[1],
+                      pAdapter->Address[2], pAdapter->Address[3],
+                      pAdapter->Address[4], pAdapter->Address[5]);
+            macAddress = std::string(mac);
+            break;
+        }
+        pAdapter = pAdapter->Next;
+    }
+
+    free(pAdapterInfo);
+    return macAddress;
+}
+
+std::string GetCPUName()
+{
+    HKEY hKey;
+    char cpuName[256] = "Unknown CPU";
+    DWORD size = sizeof(cpuName);
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        RegQueryValueExA(hKey, "ProcessorNameString", NULL, NULL, (LPBYTE)cpuName, &size);
+        RegCloseKey(hKey);
+    }
+    return std::string(cpuName);
+}
+
+std::string GetGPUName()
+{
+    HKEY hKey;
+    char gpuName[256] = "Unknown GPU";
+    DWORD size = sizeof(gpuName);
+
+    for (int i = 0; i < 10; i++)
+    {
+        char subkey[256];
+        sprintf_s(subkey, "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\%04d", i);
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, subkey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            if (RegQueryValueExA(hKey, "DriverDesc", NULL, NULL, (LPBYTE)gpuName, &size) == ERROR_SUCCESS)
+            {
+                RegCloseKey(hKey);
+                return std::string(gpuName);
+            }
+            RegCloseKey(hKey);
+        }
+    }
+    return "Unknown GPU";
+}
+
+std::string GetRAMSize()
+{
+    MEMORYSTATUSEX memStatus;
+    memStatus.dwLength = sizeof(MEMORYSTATUSEX);
+    if (GlobalMemoryStatusEx(&memStatus))
+    {
+        unsigned long long totalRamGB = memStatus.ullTotalPhys / (1024 * 1024 * 1024);
+        return std::to_string(totalRamGB) + " GB";
+    }
+    return "Unknown RAM";
+}
+
 std::string GetHostname()
 {
     char buffer[256];
@@ -79,21 +536,14 @@ std::string GetHostname()
     return "UNKNOWN-PC";
 }
 
-/**
- * Gets the local IP address of this PC.
- * Why: The server needs to know where to send commands.
- * Example: "192.168.1.50"
- */
 std::string GetLocalIP()
 {
-    // Initialize Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
         return "127.0.0.1";
     }
 
-    // Get the hostname
     char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) != 0)
     {
@@ -101,10 +551,9 @@ std::string GetLocalIP()
         return "127.0.0.1";
     }
 
-    // Get all IP addresses for this host
     struct addrinfo *result = nullptr;
     struct addrinfo hints = {};
-    hints.ai_family = AF_INET; // IPv4 only
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_flags = AI_PASSIVE;
@@ -115,11 +564,8 @@ std::string GetLocalIP()
         return "127.0.0.1";
     }
 
-    // List to store all good IPs
-    std::vector<std::string> goodIPs;
     std::string bestIP = "127.0.0.1";
 
-    // Loop through all IPs
     for (struct addrinfo *ptr = result; ptr != nullptr; ptr = ptr->ai_next)
     {
         struct sockaddr_in *sockaddr_ipv4 = (struct sockaddr_in *)ptr->ai_addr;
@@ -127,104 +573,27 @@ std::string GetLocalIP()
         inet_ntop(AF_INET, &(sockaddr_ipv4->sin_addr), ipBuffer, sizeof(ipBuffer));
         std::string currentIP = std::string(ipBuffer);
 
-        // ============================================
-        // STEP 1: Skip obvious fake IPs
-        // ============================================
-
-        // Skip loopback (127.0.0.1)
         if (currentIP.substr(0, 4) == "127.")
             continue;
-
-        // Skip link-local (169.254.x.x) - Tailscale, VPNs
         if (currentIP.substr(0, 7) == "169.254")
             continue;
-
-        // Skip virtual adapters (192.168.56.x - VirtualBox/Hyper-V)
         if (currentIP.substr(0, 11) == "192.168.56.")
             continue;
 
-        // Skip other common virtual adapter ranges
-        if (currentIP.substr(0, 10) == "192.168.57." ||
-            currentIP.substr(0, 10) == "192.168.58." ||
-            currentIP.substr(0, 10) == "192.168.59." ||
-            currentIP.substr(0, 10) == "192.168.60.")
-            continue;
-
-        // ============================================
-        // STEP 2: Check if it's a REAL network IP
-        // ============================================
-
-        bool isPrivateIP = false;
-
-        // Check for private IP ranges
-        // 192.168.x.x
-        if (currentIP.substr(0, 7) == "192.168")
-            isPrivateIP = true;
-
-        // 10.x.x.x
-        if (currentIP.substr(0, 3) == "10.")
-            isPrivateIP = true;
-
-        // 172.16.x.x to 172.31.x.x
-        if (currentIP.substr(0, 4) == "172.")
+        if (currentIP.substr(0, 7) == "192.168" || currentIP.substr(0, 3) == "10.")
         {
-            // Check if it's in the 16-31 range
-            int secondOctet = 0;
-            try
-            {
-                secondOctet = std::stoi(currentIP.substr(4, 2));
-                if (secondOctet >= 16 && secondOctet <= 31)
-                    isPrivateIP = true;
-            }
-            catch (...)
-            {
-                // Not a valid number
-            }
+            bestIP = currentIP;
+            break;
         }
-
-        // ============================================
-        // STEP 3: Store the IP if it's good
-        // ============================================
-
-        if (isPrivateIP)
-        {
-            goodIPs.push_back(currentIP);
-
-            // Prefer 192.168.x.x (most common for home/office networks)
-            if (currentIP.substr(0, 7) == "192.168")
-            {
-                bestIP = currentIP;
-                break; // Found a 192.168.x.x IP - use it immediately!
-            }
-
-            // If we haven't found a 192.168 IP yet, use this one
-            if (bestIP == "127.0.0.1")
-                bestIP = currentIP;
-        }
+        if (bestIP == "127.0.0.1")
+            bestIP = currentIP;
     }
 
     freeaddrinfo(result);
     WSACleanup();
-
-    // If we found good IPs but none were 192.168, use the first one
-    if (!goodIPs.empty() && bestIP == "127.0.0.1")
-    {
-        bestIP = goodIPs[0];
-    }
-
-    // DEBUG: Print all found IPs (remove this later)
-    std::cout << "[DEBUG] Found IPs: ";
-    for (const auto &ip : goodIPs)
-        std::cout << ip << " ";
-    std::cout << std::endl;
-
     return bestIP;
 }
-/**
- * Creates a timestamp string for logging.
- * Why: So we know when events happened.
- * Example: "2026-08-24 14:30:25"
- */
+
 std::string GetTimestamp()
 {
     SYSTEMTIME st;
@@ -236,36 +605,59 @@ std::string GetTimestamp()
     return std::string(buffer);
 }
 
-/**
- * Logs a message to console and optionally to a file.
- * Why: Debugging - you can see what the agent is doing.
- */
 void LogMessage(const std::string &message)
 {
     std::cout << "[" << GetTimestamp() << "] " << message << std::endl;
 }
 
 // ============================================================
-// HARDWARE MONITORING - Reading PC health
+// CPU TEMPERATURE (WMI)
 // ============================================================
 
-/**
- * Gets CPU usage percentage.
- * Why: We need to monitor PC health (MVP requirement).
- *
- * HOW IT WORKS:
- * 1. We use GetSystemTimes() to get the amount of time the CPU has been:
- *    - Idle (doing nothing)
- *    - Kernel (doing system tasks)
- *    - User (running programs)
- * 2. We compare these values over a 1-second interval
- * 3. The difference tells us how busy the CPU was
- *
- * This is the Windows API way - no external libraries needed!
- */
+int GetCPUTemperature()
+{
+    // Try to get CPU temperature via WMI
+    // Simplified: try reading from registry
+    HKEY hKey;
+    DWORD temp = 0;
+    DWORD size = sizeof(temp);
+
+    // Common location for CPU temperature
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "HARDWARE\\ACPI\\ThermalZone\\TZ0\\_TMP",
+                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExA(hKey, "Temperature", NULL, NULL, (LPBYTE)&temp, &size) == ERROR_SUCCESS)
+        {
+            RegCloseKey(hKey);
+            // Temperature is stored in tenths of kelvin
+            return (int)((temp / 10.0) - 273.15); // Convert to Celsius
+        }
+        RegCloseKey(hKey);
+    }
+
+    // Alternative location
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                      "HARDWARE\\ACPI\\ThermalZone\\TZ00\\_TMP",
+                      0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExA(hKey, "Temperature", NULL, NULL, (LPBYTE)&temp, &size) == ERROR_SUCCESS)
+        {
+            RegCloseKey(hKey);
+            return (int)((temp / 10.0) - 273.15);
+        }
+        RegCloseKey(hKey);
+    }
+
+    return 0;
+}
+
+// ============================================================
+// HARDWARE MONITORING (System-wide)
+// ============================================================
+
 int GetCPUUsage()
 {
-    // Static variables keep their value between function calls
     static FILETIME prevIdle = {0, 0};
     static FILETIME prevKernel = {0, 0};
     static FILETIME prevUser = {0, 0};
@@ -273,13 +665,11 @@ int GetCPUUsage()
 
     FILETIME idleTime, kernelTime, userTime;
 
-    // Get the current CPU times
     if (!GetSystemTimes(&idleTime, &kernelTime, &userTime))
     {
-        return 0; // Error - return 0%
+        return 0;
     }
 
-    // Convert FILETIME to 64-bit integers for easier math
     auto FileTimeToULongLong = [](const FILETIME &ft) -> unsigned long long
     {
         return ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
@@ -287,7 +677,6 @@ int GetCPUUsage()
 
     if (firstCall)
     {
-        // First call - just store the values and return 0
         prevIdle = idleTime;
         prevKernel = kernelTime;
         prevUser = userTime;
@@ -295,42 +684,23 @@ int GetCPUUsage()
         return 0;
     }
 
-    // Calculate the differences
     unsigned long long idleDiff = FileTimeToULongLong(idleTime) - FileTimeToULongLong(prevIdle);
     unsigned long long kernelDiff = FileTimeToULongLong(kernelTime) - FileTimeToULongLong(prevKernel);
     unsigned long long userDiff = FileTimeToULongLong(userTime) - FileTimeToULongLong(prevUser);
 
-    // Total time = kernel + user (idle is part of kernel)
     unsigned long long totalDiff = kernelDiff + userDiff;
 
-    // Store current values for next call
     prevIdle = idleTime;
     prevKernel = kernelTime;
     prevUser = userTime;
 
-    // Calculate usage percentage
-    // If totalDiff is 0, avoid division by zero
     if (totalDiff == 0)
         return 0;
 
-    // Idle percentage = (idleDiff / totalDiff) * 100
-    // Usage percentage = 100 - idle percentage
     int cpuUsage = 100 - (int)((idleDiff * 100) / totalDiff);
-
     return cpuUsage;
 }
 
-/**
- * Gets RAM usage percentage.
- * Why: Monitor memory usage - important for gaming PCs.
- *
- * HOW IT WORKS:
- * 1. Get the total amount of RAM
- * 2. Get the amount of free RAM
- * 3. Calculate: (Total - Free) / Total * 100
- *
- * Uses GlobalMemoryStatusEx - the modern Windows API for memory info.
- */
 int GetRAMUsage()
 {
     MEMORYSTATUSEX memStatus;
@@ -338,401 +708,31 @@ int GetRAMUsage()
 
     if (!GlobalMemoryStatusEx(&memStatus))
     {
-        return 0; // Error
+        return 0;
     }
 
-    // dwMemoryLoad is the percentage of memory in use
-    // Windows calculates this for us! So we just return it.
     return (int)memStatus.dwMemoryLoad;
 }
 
-/**
- * Gets CPU temperature (if available).
- * Why: This is a bonus feature - overheating is a big problem in gaming.
- *
- * NOTE: This is simplified. Getting CPU temp on Windows is complex.
- * You usually need to use WMI (Windows Management Instrumentation) or a library.
- *
- * For the MVP, we'll return a simulated value or 0 if not available.
- * In a real implementation, you'd use:
- * - WMI: Win32_TemperatureProbe
- * - OpenHardwareMonitor library
- * - Or read from CPU registers directly
- */
-int GetCPUTemperature()
-{
-    // TODO: Implement actual CPU temperature reading
-    // For now, return 0 (meaning "not available")
-    //
-    // In production, you'd use:
-    // 1. WMI with COM calls
-    // 2. Or a library like hwinfo (C++ library)
-    return 0;
-}
-
-/**
- * Gets GPU usage percentage (if available).
- * Why: Monitor GPU performance - critical for gaming.
- *
- * Similar to CPU temp, this is complex on Windows.
- * For MVP, return 0 (not available).
- */
 // ============================================================
-// GPU MONITORING - Auto-Discovery Version
+// USB DEVICE DETECTION (Anti-Theft)
 // ============================================================
 
-/**
- * Discovers all available GPU Engine counter instances.
- * Returns a vector of full counter paths.
- */
-std::vector<std::string> GetGPUCounterPaths()
-{
-    std::vector<std::string> paths;
-
-    PDH_HQUERY query = nullptr;
-
-    if (PdhOpenQueryA(nullptr, 0, &query) != ERROR_SUCCESS)
-    {
-        return paths;
-    }
-
-    DWORD bufferSize = 0;
-    DWORD itemCount = 0;
-
-    // Add wildcard counter temporarily
-    PDH_HCOUNTER wildcardCounter = nullptr;
-
-    PDH_STATUS status = PdhAddCounterA(
-        query,
-        "\\GPU Engine(*)\\Utilization Percentage",
-        0,
-        &wildcardCounter);
-
-    if (status != ERROR_SUCCESS)
-    {
-        PdhCloseQuery(query);
-        return paths;
-    }
-
-    PdhCollectQueryData(query);
-
-    status = PdhGetFormattedCounterArrayA(
-        wildcardCounter,
-        PDH_FMT_DOUBLE,
-        &bufferSize,
-        &itemCount,
-        nullptr);
-
-    if (status == PDH_MORE_DATA && bufferSize > 0)
-    {
-        auto items = (PPDH_FMT_COUNTERVALUE_ITEM_A)
-            HeapAlloc(
-                GetProcessHeap(),
-                HEAP_ZERO_MEMORY,
-                bufferSize);
-
-        if (items)
-        {
-            status = PdhGetFormattedCounterArrayA(
-                wildcardCounter,
-                PDH_FMT_DOUBLE,
-                &bufferSize,
-                &itemCount,
-                items);
-
-            if (status == ERROR_SUCCESS)
-            {
-                for (DWORD i = 0; i < itemCount; i++)
-                {
-                    std::string instanceName = items[i].szName;
-
-                    // Build full counter path for this instance
-                    std::string fullPath =
-                        "\\GPU Engine(" +
-                        instanceName +
-                        ")\\Utilization Percentage";
-
-                    paths.push_back(fullPath);
-                }
-            }
-
-            HeapFree(GetProcessHeap(), 0, items);
-        }
-    }
-
-    PdhCloseQuery(query);
-    return paths;
-}
-
-/**
- * Gets total GPU usage by discovering all GPU engine instances
- * and summing their utilization.
- */
-int GetGPUUsage()
-{
-    static PDH_HQUERY query = nullptr;
-    static std::vector<PDH_HCOUNTER> counters;
-    static bool initialized = false;
-    static bool firstCall = true;
-    static bool gpuAvailable = true;
-
-    if (!initialized)
-    {
-        LogMessage("Initializing GPU monitoring...");
-
-        // Open a query
-        if (PdhOpenQueryA(nullptr, 0, &query) != ERROR_SUCCESS)
-        {
-            LogMessage("Failed to open PDH query");
-            gpuAvailable = false;
-            initialized = true;
-            return 0;
-        }
-
-        // Add the wildcard counter - this gets ALL GPU engines
-        PDH_HCOUNTER wildcardCounter = nullptr;
-        PDH_STATUS status = PdhAddCounterA(
-            query,
-            "\\GPU Engine(*)\\Utilization Percentage",
-            0,
-            &wildcardCounter);
-
-        if (status != ERROR_SUCCESS)
-        {
-            LogMessage("Failed to add GPU counter");
-            PdhCloseQuery(query);
-            query = nullptr;
-            gpuAvailable = false;
-            initialized = true;
-            return 0;
-        }
-
-        // Collect data multiple times to get valid values
-        LogMessage("Collecting GPU data...");
-        PdhCollectQueryData(query);
-        Sleep(500);
-        PdhCollectQueryData(query);
-        Sleep(500);
-        PdhCollectQueryData(query);
-        Sleep(500);
-
-        // Get the counter array
-        DWORD bufferSize = 0;
-        DWORD itemCount = 0;
-
-        status = PdhGetFormattedCounterArrayA(
-            wildcardCounter,
-            PDH_FMT_DOUBLE,
-            &bufferSize,
-            &itemCount,
-            nullptr);
-
-        if (status == PDH_MORE_DATA && bufferSize > 0)
-        {
-            auto items = (PPDH_FMT_COUNTERVALUE_ITEM_A)
-                HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bufferSize);
-
-            if (items)
-            {
-                status = PdhGetFormattedCounterArrayA(
-                    wildcardCounter,
-                    PDH_FMT_DOUBLE,
-                    &bufferSize,
-                    &itemCount,
-                    items);
-
-                if (status == ERROR_SUCCESS)
-                {
-                    LogMessage("Found " + std::to_string(itemCount) + " GPU engine instances");
-
-                    int addedCount = 0;
-                    for (DWORD i = 0; i < itemCount; i++)
-                    {
-                        double value = items[i].FmtValue.doubleValue;
-
-                        // ============================================
-                        // KEY FIX: Only add if value is > 0
-                        // ============================================
-                        if (value > 0.0 && value <= 100.0)
-                        {
-                            std::string instanceName = items[i].szName;
-
-                            // Build the full counter path
-                            std::string fullPath =
-                                "\\GPU Engine(" + instanceName + ")\\Utilization Percentage";
-
-                            // Add this specific counter to our query
-                            PDH_HCOUNTER specificCounter = nullptr;
-                            PDH_STATUS addStatus = PdhAddCounterA(
-                                query,
-                                fullPath.c_str(),
-                                0,
-                                &specificCounter);
-
-                            if (addStatus == ERROR_SUCCESS)
-                            {
-                                counters.push_back(specificCounter);
-                                addedCount++;
-
-                                // Log first few for debugging
-                                if (addedCount <= 5)
-                                {
-                                    LogMessage("  Added: " + instanceName + " = " + std::to_string(value) + "%");
-                                }
-                            }
-                        }
-                    }
-
-                    LogMessage("Added " + std::to_string(addedCount) + " GPU counters with positive values");
-                }
-
-                HeapFree(GetProcessHeap(), 0, items);
-            }
-        }
-
-        if (counters.empty())
-        {
-            LogMessage("No GPU counters with positive values found");
-            LogMessage("Try running a game or GPU-intensive task");
-            PdhCloseQuery(query);
-            query = nullptr;
-            gpuAvailable = false;
-            initialized = true;
-            return 0;
-        }
-
-        initialized = true;
-        firstCall = true;
-
-        // First data collection
-        PdhCollectQueryData(query);
-        LogMessage("GPU monitoring initialized successfully! (" + std::to_string(counters.size()) + " active counters)");
-        return 0;
-    }
-
-    // ============================================
-    // Handle first call (returns 0 as baseline)
-    // ============================================
-    if (firstCall)
-    {
-        firstCall = false;
-        PdhCollectQueryData(query);
-        Sleep(100);
-        return 0;
-    }
-
-    // ============================================
-    // Check if GPU is available
-    // ============================================
-    if (!gpuAvailable || query == nullptr || counters.empty())
-    {
-        return 0;
-    }
-
-    // ============================================
-    // Collect data (requires two ticks)
-    // ============================================
-    PdhCollectQueryData(query);
-    Sleep(100);
-    PdhCollectQueryData(query);
-
-    // ============================================
-    // Sum all GPU engine usages
-    // ============================================
-    double totalGpuUsage = 0.0;
-
-    for (PDH_HCOUNTER counter : counters)
-    {
-        PDH_FMT_COUNTERVALUE counterValue;
-        PDH_STATUS status = PdhGetFormattedCounterValue(
-            counter,
-            PDH_FMT_DOUBLE,
-            nullptr,
-            &counterValue);
-
-        if (status == ERROR_SUCCESS)
-        {
-            double usage = counterValue.doubleValue;
-            if (usage > 0.0 && usage <= 100.0)
-            {
-                totalGpuUsage += usage;
-            }
-        }
-    }
-
-    // ============================================
-    // Return the total (capped at 100%)
-    // ============================================
-    if (totalGpuUsage > 100.0)
-        totalGpuUsage = 100.0;
-    if (totalGpuUsage < 0.0)
-        totalGpuUsage = 0.0;
-
-    return (int)totalGpuUsage;
-}
-/**
- * Collects ALL hardware information into a JSON-like string.
- * Why: This is the data we send to the server in the heartbeat.
- */
-std::string GetHardwareTelemetry()
-{
-    int cpuUsage = GetCPUUsage();
-    int ramUsage = GetRAMUsage();
-    int cpuTemp = GetCPUTemperature();
-    int gpuUsage = GetGPUUsage();
-
-    // Build a JSON string manually (simpler than using a library for MVP)
-    std::stringstream json;
-    json << "{"
-         << "\"hostname\":\"" << g_Hostname << "\","
-         << "\"cpu_usage\":" << cpuUsage << ","
-         << "\"ram_usage\":" << ramUsage << ","
-         << "\"cpu_temperature\":" << cpuTemp << ","
-         << "\"gpu_usage\":" << gpuUsage << ","
-         << "\"status\":\"" << g_Status << "\","
-         << "\"ip_address\":\"" << GetLocalIP() << "\","
-         << "\"timestamp\":\"" << GetTimestamp() << "\""
-         << "}";
-
-    return json.str();
-}
-
-// ============================================================
-// USB DETECTION - Anti-theft alert
-// ============================================================
-
-/**
- * Gets a list of all connected USB devices.
- * Why: We monitor USB devices so we can detect if someone unplugs a keyboard/mouse.
- *
- * HOW IT WORKS:
- * 1. We use SetupAPI (Windows hardware detection API)
- * 2. We ask for all devices in the "USB" device class
- * 3. We loop through them and collect their names
- * 4. We return a vector (list) of device names
- *
- * This is the standard Windows way to enumerate hardware.
- */
 std::vector<std::string> GetUSBDevices()
 {
     std::vector<std::string> devices;
 
-    // Get a list of all devices in the "USB" class
-    // GUID_DEVCLASS_USB is a special identifier for USB devices
     HDEVINFO deviceInfoSet = SetupDiGetClassDevs(
-        &GUID_DEVCLASS_USB, // The USB device class GUID
-        nullptr,            // No specific device
-        nullptr,            // No window handle
-        DIGCF_PRESENT       // Only devices that are currently plugged in
-    );
+        &GUID_DEVCLASS_USB,
+        nullptr,
+        nullptr,
+        DIGCF_PRESENT);
 
     if (deviceInfoSet == INVALID_HANDLE_VALUE)
     {
-        LogMessage("Failed to get USB device list");
         return devices;
     }
 
-    // Loop through each device
     SP_DEVINFO_DATA deviceInfoData;
     deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
 
@@ -741,18 +741,16 @@ std::vector<std::string> GetUSBDevices()
     {
         deviceIndex++;
 
-        // Get the device's friendly name (e.g., "Logitech G502 Mouse")
         char deviceName[256] = {0};
         if (SetupDiGetDeviceRegistryPropertyA(
                 deviceInfoSet,
                 &deviceInfoData,
-                SPDRP_FRIENDLYNAME, // The friendly name property
+                SPDRP_FRIENDLYNAME,
                 nullptr,
                 (PBYTE)deviceName,
                 sizeof(deviceName),
                 nullptr))
         {
-            // Only add if the name isn't empty
             if (strlen(deviceName) > 0)
             {
                 devices.push_back(std::string(deviceName));
@@ -764,21 +762,10 @@ std::vector<std::string> GetUSBDevices()
     return devices;
 }
 
-/**
- * Checks if any USB devices have been removed since the last check.
- * Why: This triggers the anti-theft alert.
- *
- * HOW IT WORKS:
- * 1. We store a list of USB devices from the previous check
- * 2. We get the current list
- * 3. We compare them
- * 4. If a device was in the old list but not the new list, it was unplugged
- */
 bool CheckUSBRemoval(std::vector<std::string> &previousDevices)
 {
     std::vector<std::string> currentDevices = GetUSBDevices();
 
-    // Check if any device from the previous list is missing
     for (const std::string &oldDevice : previousDevices)
     {
         bool stillConnected = false;
@@ -792,50 +779,199 @@ bool CheckUSBRemoval(std::vector<std::string> &previousDevices)
         }
         if (!stillConnected)
         {
-            // A device was removed!
-            LogMessage("ALERT: USB device removed: " + oldDevice);
-            previousDevices = currentDevices; // Update the list
-            return true;                      // Yes, a device was removed
+            previousDevices = currentDevices;
+            return true;
         }
     }
 
-    // Update the list for next time
     previousDevices = currentDevices;
-    return false; // No removal detected
+    return false;
 }
 
 // ============================================================
-// NETWORK COMMUNICATION - Talking to the server
+// TELEMETRY FUNCTIONS
+// ============================================================
+std::string GetActiveWindowTitle()
+{
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd)
+        return "";
+
+    char title[256];
+    GetWindowTextA(hwnd, title, sizeof(title));
+    return std::string(title);
+}
+
+bool IsWindowFullscreen()
+{
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd)
+        return false;
+
+    RECT rect;
+    GetWindowRect(hwnd, &rect);
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+    return (width >= screenWidth * 0.85 && height >= screenHeight * 0.85);
+}
+
+void GetWindowSize(int &width, int &height)
+{
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd)
+    {
+        width = 0;
+        height = 0;
+        return;
+    }
+
+    RECT rect;
+    GetWindowRect(hwnd, &rect);
+    width = rect.right - rect.left;
+    height = rect.bottom - rect.top;
+}
+
+std::string CollectTelemetry()
+{
+    std::string currentGame = g_GameDetector.GetCurrentGameName();
+    int cpuUsage = GetCPUUsage();
+    int gpuUsage = GetGPUUsage();
+    int ramUsage = GetRAMUsage();
+    int cpuTemp = GetCPUTemperature();
+    std::string windowTitle = GetActiveWindowTitle();
+    bool isFullscreen = IsWindowFullscreen();
+    int windowWidth = 0, windowHeight = 0;
+    GetWindowSize(windowWidth, windowHeight);
+    std::string hostname = GetHostname();
+
+    // Build simplified telemetry JSON (NO ML!)
+    std::stringstream json;
+    json << "{"
+         << "\"process_name\":\"" << currentGame << "\","
+         << "\"hostname\":\"" << hostname << "\","
+         << "\"cpu_usage\":" << cpuUsage << ","
+         << "\"gpu_usage\":" << gpuUsage << ","
+         << "\"ram_usage\":" << ramUsage << ","
+         << "\"cpu_temperature\":" << cpuTemp << ","
+         << "\"window_title\":\"" << windowTitle << "\","
+         << "\"is_fullscreen\":" << (isFullscreen ? 1 : 0) << ","
+         << "\"window_width\":" << windowWidth << ","
+         << "\"window_height\":" << windowHeight
+         << "}";
+
+    return json.str();
+}
+
+// ============================================================
+// WINDOW FUNCTIONS
 // ============================================================
 
-/**
- * Sends an HTTP POST request to the server.
- * Why: This is how the agent communicates with the server.
- *
- * This is a simple HTTP client implementation using Windows sockets.
- *
- * FOR THE MVP: You could use a library like libcurl or cpprestsdk.
- * But this pure Windows implementation works without extra dependencies.
- */
-bool SendHeartbeat(const std::string &hardwareData)
-{
-    LogMessage("Sending heartbeat to server...");
+// ========================================================
+// NETWORK FUNCTIONS
+// ============================================================
 
-    // Parse the server URL
+std::string DiscoverServer(int timeout_seconds = 10)
+{
+    LogMessage("[DISCOVERY] Searching for server on the network...");
+    LogMessage("[DISCOVERY] Listening on port " + std::to_string(DISCOVERY_PORT));
+
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
+        LogMessage("[DISCOVERY] WSAStartup failed");
+        return "";
+    }
+
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET)
+    {
+        LogMessage("[DISCOVERY] Socket creation failed");
+        WSACleanup();
+        return "";
+    }
+
+    BOOL broadcast = TRUE;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (char *)&broadcast, sizeof(broadcast));
+
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(DISCOVERY_PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) == SOCKET_ERROR)
+    {
+        LogMessage("[DISCOVERY] Failed to bind to port " + std::to_string(DISCOVERY_PORT));
+        closesocket(sock);
+        WSACleanup();
+        return "";
+    }
+
+    DWORD timeout = timeout_seconds * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+
+    char buffer[256];
+    struct sockaddr_in senderAddr;
+    int senderAddrSize = sizeof(senderAddr);
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    while (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - startTime).count() < timeout_seconds)
+    {
+        int bytesReceived = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
+                                     (struct sockaddr *)&senderAddr, &senderAddrSize);
+
+        if (bytesReceived > 0)
+        {
+            buffer[bytesReceived] = '\0';
+            std::string message(buffer);
+
+            if (message.find("SERVER:") == 0)
+            {
+                std::string ip = message.substr(7);
+                size_t colonPos = ip.find(':');
+                if (colonPos != std::string::npos)
+                {
+                    ip = ip.substr(0, colonPos);
+                }
+                LogMessage("[DISCOVERY] ✅ Server found at: " + ip);
+                closesocket(sock);
+                WSACleanup();
+                return ip;
+            }
+        }
+    }
+
+    LogMessage("[DISCOVERY] ❌ Server not found (timeout)");
+    closesocket(sock);
+    WSACleanup();
+    return "";
+}
+
+// ============================================================
+// SEND FUNCTIONS
+// ============================================================
+
+bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoint)
+{
+    if (SERVER_URL.empty())
+        return false;
+
     std::string serverUrl = SERVER_URL;
     std::string host = serverUrl;
-    std::string path = "/api/heartbeat";
+    std::string path = endpoint;
 
-    // Remove http:// from host
     size_t httpPos = host.find("://");
     if (httpPos != std::string::npos)
     {
         host = host.substr(httpPos + 3);
     }
 
-    // Extract host and port
     std::string hostname = host;
-    int port = 8000;
+    int port = 8003;
     size_t colonPos = host.find(":");
     if (colonPos != std::string::npos)
     {
@@ -843,247 +979,152 @@ bool SendHeartbeat(const std::string &hardwareData)
         port = std::stoi(host.substr(colonPos + 1));
     }
 
-    // Initialize Winsock
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
-        LogMessage("WSAStartup failed");
+        LogMessage("[TELEMETRY] WSAStartup failed");
         return false;
     }
 
-    // Create socket
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET)
     {
-        LogMessage("Socket creation failed");
+        LogMessage("[TELEMETRY] Socket creation failed");
         WSACleanup();
         return false;
     }
 
-    // Set up server address
     struct sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);
     serverAddr.sin_addr.s_addr = inet_addr(hostname.c_str());
 
-    // Connect to server
     if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
     {
-        LogMessage("Connection to server failed! Is the server running?");
+        LogMessage("[TELEMETRY] Connection failed: " + std::to_string(WSAGetLastError()));
         closesocket(sock);
         WSACleanup();
         return false;
     }
 
-    // Build HTTP POST request
     std::string request =
         "POST " + path + " HTTP/1.1\r\n"
                          "Host: " +
         hostname + "\r\n"
                    "Content-Type: application/json\r\n"
                    "Content-Length: " +
-        std::to_string(hardwareData.length()) + "\r\n"
-                                                "Connection: close\r\n"
-                                                "\r\n" +
-        hardwareData;
+        std::to_string(data.length()) + "\r\n"
+                                        "Connection: close\r\n"
+                                        "\r\n" +
+        data;
 
-    // Send request
-    int bytesSent = send(sock, request.c_str(), request.length(), 0);
-    if (bytesSent == SOCKET_ERROR)
+    int sent = send(sock, request.c_str(), request.length(), 0);
+    if (sent == SOCKET_ERROR)
     {
-        LogMessage("Send failed");
+        LogMessage("[TELEMETRY] Send failed: " + std::to_string(WSAGetLastError()));
         closesocket(sock);
         WSACleanup();
         return false;
     }
 
-    // Receive response
     char buffer[1024];
-    int bytesReceived = recv(sock, buffer, sizeof(buffer) - 1, 0);
-    if (bytesReceived > 0)
-    {
-        buffer[bytesReceived] = '\0';
-        if (strstr(buffer, "200 OK") != nullptr)
-        {
-            LogMessage("Heartbeat sent successfully!");
-        }
-        else
-        {
-            LogMessage("Server responded but not with 200 OK");
-        }
-    }
+    recv(sock, buffer, sizeof(buffer) - 1, 0);
 
     closesocket(sock);
     WSACleanup();
+
     return true;
 }
-/**
- * Polls the server for commands.
- * Why: The server needs to be able to send commands (lock, shutdown, etc.).
- *
- * HOW IT WORKS:
- * 1. We send a GET request to the server
- * 2. The server responds with a list of commands for this PC
- * 3. We execute each command
- */
-void ExecuteCommand(const std::string &command, const std::string &parameter);
 
-bool PollForCommands()
+bool SendTelemetry()
 {
-    LogMessage("Polling for commands...");
-
-    // Create a simple HTTP GET request to the server
-    std::string request =
-        "GET /api/commands/" + g_Hostname + " HTTP/1.1\r\n"
-                                            "Host: 192.168.100.41:8000\r\n"
-                                            "Connection: close\r\n"
-                                            "\r\n";
-
-    // Initialize Winsock
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        LogMessage("WSAStartup failed");
+    if (SERVER_URL.empty())
         return false;
-    }
 
-    // Create socket
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sock == INVALID_SOCKET)
-    {
-        LogMessage("Socket creation failed");
-        WSACleanup();
-        return false;
-    }
+    std::string telemetryData = CollectTelemetry();
+    std::string macAddress = GetMACAddress();
 
-    // Set up server address
-    struct sockaddr_in serverAddr;
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(8000);
-    serverAddr.sin_addr.s_addr = inet_addr("192.168.100.41");
+    std::stringstream json;
+    json << "{"
+         << "\"pc_id\":\"" << macAddress << "\","
+         << "\"features\":" << telemetryData
+         << "}";
 
-    // Connect to server
-    if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
-    {
-        LogMessage("Connection failed - is the server running?");
-        closesocket(sock);
-        WSACleanup();
-        return false;
-    }
+    std::string data = json.str();
 
-    LogMessage("Connected to server");
+    // ============================================================
+    // DEBUG: Log the full data being sent
+    // ============================================================
+    LogMessage("[DEBUG] ===== SENDING TELEMETRY =====");
+    LogMessage("[DEBUG] Data: " + data);
+    LogMessage("[DEBUG] ==============================");
 
-    // Send request
-    send(sock, request.c_str(), request.length(), 0);
-    LogMessage("Request sent");
+    return SendTelemetryToEndpoint(data, "/api/heartbeat");
+}
+// ============================================================
+// HEARTBEAT
+// ============================================================
 
-    // Read ALL data until the connection closes
-    std::string fullResponse;
-    char buffer[4096];
-    int bytesReceived;
+std::string GetHardwareTelemetry()
+{
+    int cpuUsage = GetCPUUsage();
+    int ramUsage = GetRAMUsage();
+    int gpuUsage = GetGPUUsage();
+    int cpuTemp = GetCPUTemperature();
+    std::string currentGame = g_GameDetector.GetCurrentGameName();
+    std::string macAddress = GetMACAddress();
+    std::string ipAddress = GetLocalIP();
+    std::string cpuName = GetCPUName();
+    std::string gpuName = GetGPUName();
+    std::string ramSize = GetRAMSize();
 
-    while ((bytesReceived = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0)
-    {
-        buffer[bytesReceived] = '\0';
-        fullResponse += buffer;
-        LogMessage("Received chunk: " + std::to_string(bytesReceived) + " bytes");
-    }
+    std::stringstream json;
+    json << "{"
+         << "\"hostname\":\"" << g_Hostname << "\","
+         << "\"mac_address\":\"" << macAddress << "\","
+         << "\"ip_address\":\"" << ipAddress << "\","
+         << "\"cpu_usage\":" << cpuUsage << ","
+         << "\"ram_usage\":" << ramUsage << ","
+         << "\"gpu_usage\":" << gpuUsage << ","
+         << "\"cpu_temperature\":" << cpuTemp << ","
+         << "\"active_game\":\"" << currentGame << "\","
+         << "\"status\":\"" << g_Status << "\","
+         << "\"timestamp\":\"" << GetTimestamp() << "\","
+         << "\"hardware\":{"
+         << "\"cpu\":\"" << cpuName << "\","
+         << "\"gpu\":\"" << gpuName << "\","
+         << "\"ram\":\"" << ramSize << "\""
+         << "}"
+         << "}";
 
-    if (fullResponse.empty())
-    {
-        LogMessage("No response from server");
-        closesocket(sock);
-        WSACleanup();
-        return false;
-    }
-
-    LogMessage("Total bytes received: " + std::to_string(fullResponse.length()));
-    LogMessage("Full response: " + fullResponse);
-
-    // Find the JSON body - look for the first '[' character
-    size_t jsonStart = fullResponse.find('[');
-    if (jsonStart == std::string::npos)
-    {
-        LogMessage("No JSON array found (no '[' character)");
-        closesocket(sock);
-        WSACleanup();
-        return false;
-    }
-
-    // Extract from '[' to the end
-    std::string jsonBody = fullResponse.substr(jsonStart);
-
-    // Trim trailing whitespace
-    while (!jsonBody.empty() && (jsonBody.back() == '\r' || jsonBody.back() == '\n' || jsonBody.back() == ' ' || jsonBody.back() == '\0'))
-    {
-        jsonBody.pop_back();
-    }
-
-    LogMessage("JSON Body: [" + jsonBody + "]");
-
-    // Check for commands
-    if (jsonBody.find("LOCK") != std::string::npos)
-    {
-        LogMessage(">>> EXECUTING LOCK");
-        ExecuteCommand("LOCK", "");
-        closesocket(sock);
-        WSACleanup();
-        return true;
-    }
-    else if (jsonBody.find("SHUTDOWN") != std::string::npos)
-    {
-        LogMessage(">>> EXECUTING SHUTDOWN");
-        ExecuteCommand("SHUTDOWN", "");
-        closesocket(sock);
-        WSACleanup();
-        return true;
-    }
-    else if (jsonBody.find("RESTART") != std::string::npos)
-    {
-        LogMessage(">>> EXECUTING RESTART");
-        ExecuteCommand("RESTART", "");
-        closesocket(sock);
-        WSACleanup();
-        return true;
-    }
-    else if (jsonBody.find("START_SESSION") != std::string::npos)
-    {
-        LogMessage(">>> EXECUTING START_SESSION");
-        ExecuteCommand("START_SESSION", "Player");
-        closesocket(sock);
-        WSACleanup();
-        return true;
-    }
-    else if (jsonBody.find("END_SESSION") != std::string::npos)
-    {
-        LogMessage(">>> EXECUTING END_SESSION");
-        ExecuteCommand("END_SESSION", "");
-        closesocket(sock);
-        WSACleanup();
-        return true;
-    }
-    else
-    {
-        LogMessage("No commands found in JSON");
-    }
-
-    closesocket(sock);
-    WSACleanup();
-    return false;
+    return json.str();
 }
 
-/**
- * Executes a command received from the server.
- * Why: This is how the admin controls the PC remotely.
- */
-void ExecuteCommand(const std::string &command, const std::string &parameter = "")
+bool SendHeartbeat(const std::string &hardwareData)
 {
-    LogMessage("Executing command: " + command + " (param: " + parameter + ")");
+    if (SERVER_URL.empty())
+    {
+        LogMessage("[ERROR] SERVER_URL is empty!");
+        return false;
+    }
 
+    // ============================================================
+    // DEBUG: Log heartbeat data
+    // ============================================================
+    LogMessage("[DEBUG] ===== SENDING HEARTBEAT =====");
+    LogMessage("[DEBUG] Data: " + hardwareData);
+    LogMessage("[DEBUG] ==============================");
+
+    return SendTelemetryToEndpoint(hardwareData, "/api/heartbeat");
+}
+// ============================================================
+// COMMAND EXECUTION
+// ============================================================
+
+void ExecuteCommand(const std::string &command, const std::string &parameter)
+{
     if (command == "LOCK")
     {
-        // Lock the workstation (like pressing Win+L)
-        // LockWorkStation() is a Windows API function
         if (LockWorkStation())
         {
             g_Status = "locked";
@@ -1094,29 +1135,78 @@ void ExecuteCommand(const std::string &command, const std::string &parameter = "
             LogMessage("Failed to lock screen");
         }
     }
-    else if (command == "RESTART")
-    {
-        LogMessage("Restarting PC...");
-        system("shutdown /r /t 10 /c \"Restarting by remote command\"");
-    }
     else if (command == "SHUTDOWN")
     {
-        LogMessage("Shutting down PC...");
-        system("shutdown /s /t 10 /c \"Shutting down by remote command\"");
+        HANDLE hToken;
+        TOKEN_PRIVILEGES tkp;
+
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        {
+            LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+            tkp.PrivilegeCount = 1;
+            tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+
+            if (GetLastError() == ERROR_SUCCESS)
+            {
+                ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER);
+            }
+            else
+            {
+                system("shutdown /s /t 5");
+            }
+            CloseHandle(hToken);
+        }
+        else
+        {
+            system("shutdown /s /t 5");
+        }
+    }
+    else if (command == "RESTART")
+    {
+        HANDLE hToken;
+        TOKEN_PRIVILEGES tkp;
+
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        {
+            LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+            tkp.PrivilegeCount = 1;
+            tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+
+            if (GetLastError() == ERROR_SUCCESS)
+            {
+                ExitWindowsEx(EWX_REBOOT | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER);
+            }
+            else
+            {
+                system("shutdown /r /t 5");
+            }
+            CloseHandle(hToken);
+        }
+        else
+        {
+            system("shutdown /r /t 5");
+        }
     }
     else if (command == "START_SESSION")
     {
-        // Start a gaming session
         g_SessionUser = parameter.empty() ? "Player" : parameter;
         g_Status = "in_session";
         LogMessage("Session started for: " + g_SessionUser);
     }
     else if (command == "END_SESSION")
     {
-        // End the gaming session
-        LogMessage("Session ended for: " + g_SessionUser);
+        LogMessage("=== ENDING SESSION ===");
         g_SessionUser = "";
         g_Status = "online";
+        LogMessage("Session ended");
+    }
+    else if (command == "LAUNCH_GAME")
+    {
+        LogMessage("🎮 Launching game: " + parameter);
+        // You could add game launch logic here
+        // ShellExecuteA(NULL, "open", parameter.c_str(), NULL, NULL, SW_SHOW);
     }
     else
     {
@@ -1124,100 +1214,524 @@ void ExecuteCommand(const std::string &command, const std::string &parameter = "
     }
 }
 
-/**
- * Processes a list of commands from the server.
- */
-void ProcessCommands(const std::vector<std::pair<std::string, std::string>> &commands)
+bool PollForCommands()
 {
-    for (const auto &cmd : commands)
+    if (SERVER_URL.empty())
+        return false;
+
+    std::string serverUrl = SERVER_URL;
+    std::string host = serverUrl;
+
+    size_t httpPos = host.find("://");
+    if (httpPos != std::string::npos)
     {
-        ExecuteCommand(cmd.first, cmd.second);
+        host = host.substr(httpPos + 3);
+    }
+
+    std::string hostname = host;
+    int port = 8003;
+    size_t colonPos = host.find(":");
+    if (colonPos != std::string::npos)
+    {
+        hostname = host.substr(0, colonPos);
+        port = std::stoi(host.substr(colonPos + 1));
+    }
+
+    std::string macAddress = GetMACAddress();
+    std::string path = "/api/commands/" + macAddress;
+
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        return false;
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET)
+    {
+        WSACleanup();
+        return false;
+    }
+
+    struct sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(port);
+    serverAddr.sin_addr.s_addr = inet_addr(hostname.c_str());
+
+    if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
+    {
+        closesocket(sock);
+        WSACleanup();
+        return false;
+    }
+
+    std::string request =
+        "GET " + path + " HTTP/1.1\r\n"
+                        "Host: " +
+        hostname + "\r\n"
+                   "Connection: close\r\n"
+                   "\r\n";
+
+    send(sock, request.c_str(), request.length(), 0);
+
+    std::string fullResponse;
+    char buffer[4096];
+    int bytesReceived;
+
+    while ((bytesReceived = recv(sock, buffer, sizeof(buffer) - 1, 0)) > 0)
+    {
+        buffer[bytesReceived] = '\0';
+        fullResponse += buffer;
+    }
+
+    bool hasCommands = false;
+    if (!fullResponse.empty())
+    {
+        size_t jsonStart = fullResponse.find('[');
+        if (jsonStart != std::string::npos)
+        {
+            std::string jsonBody = fullResponse.substr(jsonStart);
+
+            // Clean up
+            while (!jsonBody.empty() && (jsonBody.back() == '\r' || jsonBody.back() == '\n' || jsonBody.back() == ' ' || jsonBody.back() == '\0'))
+            {
+                jsonBody.pop_back();
+            }
+
+            if (!jsonBody.empty() && jsonBody != "[]" && jsonBody != "null")
+            {
+                if (jsonBody.find("LOCK") != std::string::npos)
+                {
+                    ExecuteCommand("LOCK", "");
+                    hasCommands = true;
+                }
+                else if (jsonBody.find("SHUTDOWN") != std::string::npos)
+                {
+                    ExecuteCommand("SHUTDOWN", "");
+                    hasCommands = true;
+                }
+                else if (jsonBody.find("RESTART") != std::string::npos)
+                {
+                    ExecuteCommand("RESTART", "");
+                    hasCommands = true;
+                }
+                else if (jsonBody.find("START_SESSION") != std::string::npos)
+                {
+                    ExecuteCommand("START_SESSION", "Player");
+                    hasCommands = true;
+                }
+                else if (jsonBody.find("END_SESSION") != std::string::npos)
+                {
+                    ExecuteCommand("END_SESSION", "");
+                    hasCommands = true;
+                }
+                else if (jsonBody.find("LAUNCH_GAME") != std::string::npos)
+                {
+                    // Extract game name
+                    size_t pos = jsonBody.find("LAUNCH_GAME");
+                    size_t end = jsonBody.find("}", pos);
+                    std::string sub = jsonBody.substr(pos, end - pos);
+                    size_t paramPos = sub.find("parameter\":\"");
+                    if (paramPos != std::string::npos)
+                    {
+                        paramPos += 12;
+                        size_t paramEnd = sub.find("\"", paramPos);
+                        std::string game = sub.substr(paramPos, paramEnd - paramPos);
+                        ExecuteCommand("LAUNCH_GAME", game);
+                        hasCommands = true;
+                    }
+                }
+            }
+        }
+    }
+
+    closesocket(sock);
+    WSACleanup();
+
+    return hasCommands;
+}
+
+// ============================================================
+// USB MONITORING THREAD
+// ============================================================
+
+void USBMonitoringThread()
+{
+    std::vector<std::string> usbDevices = GetUSBDevices();
+    LogMessage("[USB] Monitoring USB devices...");
+
+    while (g_Running)
+    {
+        if (CheckUSBRemoval(usbDevices))
+        {
+            LogMessage("[USB] ⚠️ USB device removed! Sending alert...");
+
+            // Send alert to server
+            if (!SERVER_URL.empty())
+            {
+                std::stringstream json;
+                json << "{"
+                     << "\"pc_id\":\"" << GetMACAddress() << "\","
+                     << "\"usb_removed\":true,"
+                     << "\"timestamp\":\"" << GetTimestamp() << "\""
+                     << "}";
+
+                SendTelemetryToEndpoint(json.str(), "/api/heartbeat");
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
     }
 }
 
 // ============================================================
-// MAIN AGENT THREAD - This is where the magic happens
+// AGENT MAIN LOOP
 // ============================================================
 
-/**
- * The main agent loop.
- * Why: This runs continuously, doing all the work.
- *
- * This is the "heart" of the agent. It runs in its own thread
- * and performs all the tasks in a loop with small sleeps.
- *
- * The sleep is CRITICAL - it prevents the CPU from being overloaded.
- * With a 100ms sleep, the agent uses almost 0% CPU when idle.
- */
 void AgentMainLoop()
 {
     LogMessage("Agent main loop started");
 
-    // Initialize USB monitoring
-    std::vector<std::string> usbDevices = GetUSBDevices();
+    // Start USB monitoring thread
+    std::thread usbThread(USBMonitoringThread);
 
-    // Main loop - runs until g_Running is set to false
+    // LogMessage(">>> SENDING INITIAL HEARTBEAT");
+    //  std::string hardwareData = GetHardwareTelemetry();
+    //  SendHeartbeat(hardwareData);
+
+    // auto lastHeartbeat = std::chrono::steady_clock::now();
+    auto lastCommandPoll = std::chrono::steady_clock::now();
+    auto lastTelemetry = std::chrono::steady_clock::now();
+
     while (g_Running)
     {
-        // === TASK 1: Check for USB removal (anti-theft) ===
-        // We check every USB_CHECK_INTERVAL_MS milliseconds
-        static auto lastUsbCheck = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
 
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastUsbCheck).count() >= USB_CHECK_INTERVAL_MS)
+        // Send telemetry - every 2 seconds
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTelemetry).count() >= TELEMETRY_INTERVAL_MS)
         {
-
-            if (CheckUSBRemoval(usbDevices))
-            {
-                // A USB device was removed - send alert to server
-                LogMessage("USB removal detected - sending alert");
-                // TODO: Send alert to server
-            }
-            lastUsbCheck = now;
+            SendTelemetry();
+            lastTelemetry = now;
         }
 
-        // === TASK 2: Send heartbeat to server ===
-        // We send every HEARTBEAT_INTERVAL_MS milliseconds
-        static auto lastHeartbeat = std::chrono::steady_clock::now();
-
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHeartbeat).count() >= HEARTBEAT_INTERVAL_MS)
-        {
-
-            // Get hardware data
-            std::string hardwareData = GetHardwareTelemetry();
-
-            // Send to server
-            SendHeartbeat(hardwareData);
-            lastHeartbeat = now;
-        }
-
-        // === TASK 3: Poll for commands ===
-        // We poll every COMMAND_POLL_INTERVAL_MS milliseconds
-        static auto lastCommandPoll = std::chrono::steady_clock::now();
-
+        // Heartbeat - every 10 seconds
+        /* if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHeartbeat).count() >= HEARTBEAT_INTERVAL_MS)
+         {
+             std::string hardwareData2 = GetHardwareTelemetry();
+             SendHeartbeat(hardwareData2);
+             lastHeartbeat = now;
+         }
+ */
+        // Poll commands - every 2 seconds
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCommandPoll).count() >= COMMAND_POLL_INTERVAL_MS)
         {
-
             PollForCommands();
             lastCommandPoll = now;
         }
 
-        // === CRITICAL: Sleep to prevent CPU hogging ===
-        // This is why the agent uses almost 0% CPU!
-        // We sleep for a short time, then loop again.
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    if (usbThread.joinable())
+    {
+        usbThread.join();
     }
 
     LogMessage("Agent main loop stopped");
 }
 
 // ============================================================
-// MAIN ENTRY POINT - Where the program starts
+// SERVICE FUNCTIONS
+// ============================================================
+
+void WINAPI ServiceCtrlHandler(DWORD dwCtrl)
+{
+    switch (dwCtrl)
+    {
+    case SERVICE_CONTROL_STOP:
+    case SERVICE_CONTROL_SHUTDOWN:
+        g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+        SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
+        g_Running = false;
+        if (g_ServiceThread.joinable())
+        {
+            g_ServiceThread.join();
+        }
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
+        break;
+    default:
+        break;
+    }
+}
+
+void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
+{
+    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    g_ServiceStatus.dwWin32ExitCode = 0;
+    g_ServiceStatus.dwServiceSpecificExitCode = 0;
+    g_ServiceStatus.dwCheckPoint = 0;
+    g_ServiceStatus.dwWaitHint = 30000;
+
+    g_hServiceStatus = RegisterServiceCtrlHandlerA(
+        "GamingAgent",
+        (LPHANDLER_FUNCTION)ServiceCtrlHandler);
+
+    if (g_hServiceStatus == NULL)
+    {
+        return;
+    }
+
+    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+    SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
+
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+
+    g_Hostname = GetHostname();
+    g_Running = true;
+
+    g_ServiceThread = std::thread(AgentMainLoop);
+
+    while (g_Running)
+    {
+        Sleep(1000);
+    }
+
+    if (g_ServiceThread.joinable())
+    {
+        g_ServiceThread.join();
+    }
+
+    WSACleanup();
+
+    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+    SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
+}
+
+// ============================================================
+// SERVICE INSTALLATION FUNCTIONS
+// ============================================================
+
+void InstallService()
+{
+    SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+    if (hSCManager)
+    {
+        char szPath[MAX_PATH];
+        GetModuleFileNameA(NULL, szPath, MAX_PATH);
+
+        SC_HANDLE hService = CreateServiceA(
+            hSCManager,
+            "GamingAgent",
+            "Gaming Agent Service",
+            SERVICE_ALL_ACCESS,
+            SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_AUTO_START,
+            SERVICE_ERROR_NORMAL,
+            szPath,
+            NULL, NULL, NULL, NULL, NULL);
+
+        if (hService)
+        {
+            printf("[SUCCESS] Service 'GamingAgent' installed successfully!\n");
+            CloseServiceHandle(hService);
+        }
+        else
+        {
+            printf("[ERROR] Failed to install service. Error: %d\n", GetLastError());
+        }
+        CloseServiceHandle(hSCManager);
+    }
+    else
+    {
+        printf("[ERROR] Failed to open Service Control Manager. Run as Administrator!\n");
+    }
+}
+
+void UninstallService()
+{
+    SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (hSCManager)
+    {
+        SC_HANDLE hService = OpenServiceA(hSCManager, "GamingAgent", SERVICE_ALL_ACCESS);
+        if (hService)
+        {
+            SERVICE_STATUS status;
+            if (QueryServiceStatus(hService, &status))
+            {
+                if (status.dwCurrentState != SERVICE_STOPPED)
+                {
+                    printf("Stopping service...\n");
+                    ControlService(hService, SERVICE_CONTROL_STOP, &status);
+                    Sleep(2000);
+                }
+            }
+
+            if (DeleteService(hService))
+            {
+                printf("[SUCCESS] Service 'GamingAgent' uninstalled!\n");
+            }
+            else
+            {
+                printf("[ERROR] Failed to uninstall service. Error: %d\n", GetLastError());
+            }
+            CloseServiceHandle(hService);
+        }
+        else
+        {
+            printf("[ERROR] Service 'GamingAgent' not found.\n");
+        }
+        CloseServiceHandle(hSCManager);
+    }
+    else
+    {
+        printf("[ERROR] Failed to open Service Control Manager. Run as Administrator!\n");
+    }
+}
+
+void StartService()
+{
+    SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (hSCManager)
+    {
+        SC_HANDLE hService = OpenServiceA(hSCManager, "GamingAgent", SERVICE_ALL_ACCESS);
+        if (hService)
+        {
+            if (StartServiceA(hService, 0, NULL))
+            {
+                printf("[SUCCESS] Service 'GamingAgent' started!\n");
+            }
+            else
+            {
+                printf("[ERROR] Failed to start service. Error: %d\n", GetLastError());
+            }
+            CloseServiceHandle(hService);
+        }
+        else
+        {
+            printf("[ERROR] Service 'GamingAgent' not found.\n");
+        }
+        CloseServiceHandle(hSCManager);
+    }
+    else
+    {
+        printf("[ERROR] Failed to open Service Control Manager. Run as Administrator!\n");
+    }
+}
+
+void StopService()
+{
+    SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (hSCManager)
+    {
+        SC_HANDLE hService = OpenServiceA(hSCManager, "GamingAgent", SERVICE_ALL_ACCESS);
+        if (hService)
+        {
+            SERVICE_STATUS status;
+            if (ControlService(hService, SERVICE_CONTROL_STOP, &status))
+            {
+                printf("[SUCCESS] Service 'GamingAgent' stopped!\n");
+            }
+            else
+            {
+                printf("[ERROR] Failed to stop service. Error: %d\n", GetLastError());
+            }
+            CloseServiceHandle(hService);
+        }
+        else
+        {
+            printf("[ERROR] Service 'GamingAgent' not found.\n");
+        }
+        CloseServiceHandle(hSCManager);
+    }
+    else
+    {
+        printf("[ERROR] Failed to open Service Control Manager. Run as Administrator!\n");
+    }
+}
+
+void ShowServiceStatus()
+{
+    SC_HANDLE hSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (hSCManager)
+    {
+        SC_HANDLE hService = OpenServiceA(hSCManager, "GamingAgent", SERVICE_ALL_ACCESS);
+        if (hService)
+        {
+            SERVICE_STATUS status;
+            if (QueryServiceStatus(hService, &status))
+            {
+                const char *stateStr;
+                switch (status.dwCurrentState)
+                {
+                case SERVICE_STOPPED:
+                    stateStr = "STOPPED";
+                    break;
+                case SERVICE_RUNNING:
+                    stateStr = "RUNNING";
+                    break;
+                default:
+                    stateStr = "OTHER";
+                    break;
+                }
+                printf("[STATUS] GamingAgent: %s\n", stateStr);
+            }
+            CloseServiceHandle(hService);
+        }
+        else
+        {
+            printf("[ERROR] Service 'GamingAgent' not found.\n");
+        }
+        CloseServiceHandle(hSCManager);
+    }
+    else
+    {
+        printf("[ERROR] Failed to open Service Control Manager. Run as Administrator!\n");
+    }
+}
+
+// ============================================================
+// MAIN ENTRY POINT
 // ============================================================
 
 int main()
 {
-    // Initialize Winsock (for networking)
+    if (strstr(GetCommandLineA(), "--install"))
+    {
+        InstallService();
+        return 0;
+    }
+    else if (strstr(GetCommandLineA(), "--uninstall"))
+    {
+        UninstallService();
+        return 0;
+    }
+    else if (strstr(GetCommandLineA(), "--start"))
+    {
+        StartService();
+        return 0;
+    }
+    else if (strstr(GetCommandLineA(), "--stop"))
+    {
+        StopService();
+        return 0;
+    }
+    else if (strstr(GetCommandLineA(), "--status"))
+    {
+        ShowServiceStatus();
+        return 0;
+    }
+
+    if (GetStdHandle(STD_OUTPUT_HANDLE) == NULL)
+    {
+        SERVICE_TABLE_ENTRYA ServiceTable[] = {
+            {(LPSTR) "GamingAgent", (LPSERVICE_MAIN_FUNCTIONA)ServiceMain},
+            {NULL, NULL}};
+        StartServiceCtrlDispatcherA(ServiceTable);
+        return 0;
+    }
+
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
@@ -1225,39 +1739,47 @@ int main()
         return 1;
     }
 
-    // Get the hostname
     g_Hostname = GetHostname();
 
-    // Print startup banner
     std::cout << "===========================================" << std::endl;
     std::cout << "   GAMING PC AGENT (C++)" << std::endl;
     std::cout << "===========================================" << std::endl;
     std::cout << "Hostname: " << g_Hostname << std::endl;
+    std::cout << "MAC: " << GetMACAddress() << std::endl;
     std::cout << "IP: " << GetLocalIP() << std::endl;
     std::cout << "Status: " << g_Status << std::endl;
     std::cout << "===========================================" << std::endl;
-    std::cout << "Server: " << SERVER_URL << std::endl;
-    std::cout << "Heartbeat interval: " << HEARTBEAT_INTERVAL_MS / 1000 << "s" << std::endl;
-    std::cout << "Press Ctrl+C to exit" << std::endl;
+
+    std::cout << "Discovering server on the network..." << std::endl;
+    std::string serverIP = DiscoverServer(10);
+
+    if (serverIP.empty())
+    {
+        std::cout << "[ERROR] Could not find server!" << std::endl;
+        std::cout << "Make sure the server is running." << std::endl;
+        std::cout << "Press Enter to exit..." << std::endl;
+        std::cin.get();
+        WSACleanup();
+        return 1;
+    }
+
+    SERVER_URL = "http://" + serverIP + ":8003";
+    std::cout << "✅ Server found at: " << SERVER_URL << std::endl;
     std::cout << "===========================================" << std::endl;
 
-    // Create the agent thread
+    std::cout << "Agent is running. Press Enter to stop..." << std::endl;
+
     std::thread agentThread(AgentMainLoop);
 
-    // Wait for user to press Enter to stop
-    std::cout << "\nAgent is running. Press Enter to stop..." << std::endl;
     std::cin.get();
 
-    // Signal the agent to stop
     g_Running = false;
 
-    // Wait for the agent thread to finish
     if (agentThread.joinable())
     {
         agentThread.join();
     }
 
-    // Cleanup Winsock
     WSACleanup();
 
     std::cout << "Agent stopped." << std::endl;

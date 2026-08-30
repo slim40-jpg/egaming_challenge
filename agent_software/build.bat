@@ -1,13 +1,29 @@
 @echo off
-echo Compiling Gaming Agent...
+echo ==========================================
+echo   COMPILING GAMING AGENT
+echo ==========================================
+echo.
 
-g++ -o agent.exe main.cpp -lws2_32 -liphlpapi -lsetupapi -lcfgmgr32 -luuid -lpdh -static
+g++ -o gaming_agent.exe main.cpp ^
+    -lws2_32 -liphlpapi -lsetupapi -lcfgmgr32 -lpdh -ladvapi32 -lpsapi ^
+    -lole32 -luuid ^
+    -std=c++11 ^
+    -Wno-missing-braces ^
+    -Wno-write-strings
 
 if %errorlevel% == 0 (
-    echo Done! Running agent.exe...
-    agent.exe
+    echo.
+    echo ==========================================
+    echo ✅ BUILD SUCCESSFUL!
+    echo ==========================================
+    echo File: gaming_agent.exe
+    echo Size: 
+    dir gaming_agent.exe
 ) else (
-    echo Compilation failed!
+    echo.
+    echo ==========================================
+    echo ❌ BUILD FAILED!
+    echo ==========================================
 )
 
 pause
