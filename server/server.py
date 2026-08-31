@@ -176,6 +176,143 @@ def launch_game():
     print(f"[GAME LAUNCH] {pc_id} -> {game['name']}")
     return jsonify({'status': 'ok', 'message': f'Launching {game["name"]}'})
 
+
+    # ============================================================
+# INSTALLED GAMES ENDPOINTS - FIXED
+# ============================================================
+
+@app.route('/api/games/installed', methods=['POST'])
+def receive_installed_games():
+    try:
+        data = request.json
+        pc_id = data.get('pc_id')
+        hostname = data.get('hostname', 'Unknown')
+        games = data.get('games', [])
+        
+        if not pc_id:
+            return jsonify({'status': 'error', 'message': 'No PC ID'}), 400
+        
+        # Initialize PC if needed
+        if pc_id not in pcs:
+            pcs[pc_id] = {
+                'hostname': hostname,
+                'first_seen': datetime.now().isoformat()
+            }
+        
+        # Store installed games with full paths - MAKE A COPY
+        stored_games = []
+        for game in games:
+            # Ensure we keep all fields
+            stored_game = {
+                'name': game.get('name', 'Unknown'),
+                'executable': game.get('executable', game.get('executable_path', '')),
+                'executable_path': game.get('executable', game.get('executable_path', '')),  # Keep both
+                'shortcut': game.get('shortcut', game.get('shortcut_path', '')),
+                'shortcut_path': game.get('shortcut', game.get('shortcut_path', '')),  # Keep both
+                'platform': game.get('platform', 'standalone'),
+                'is_running': game.get('is_running', False)
+            }
+            stored_games.append(stored_game)
+        
+        pcs[pc_id]['installed_games'] = stored_games
+        pcs[pc_id]['last_game_scan'] = datetime.now().isoformat()
+        
+        print(f"[GAMES] {pc_id} - Found {len(stored_games)} games")
+        for game in stored_games:
+            status = "🟢 RUNNING" if game.get('is_running') else "⏸️"
+            exe_path = game.get('executable_path', game.get('executable', 'NO_PATH'))
+            print(f"  - {game.get('name')} ({game.get('platform', 'standalone')}) {status}")
+            print(f"      EXE: {exe_path}")
+        
+        return jsonify({'status': 'ok', 'message': f'Received {len(stored_games)} games'})
+    
+    except Exception as e:
+        print(f"[ERROR] Failed to receive games: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/pc/<pc_id>/games', methods=['GET'])
+def get_pc_games(pc_id):
+    if pc_id not in pcs:
+        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
+    
+    games = pcs[pc_id].get('installed_games', [])
+    
+    # Ensure each game has executable_path
+    for game in games:
+        if 'executable_path' not in game or not game['executable_path']:
+            game['executable_path'] = game.get('executable', '')
+        if 'shortcut_path' not in game or not game['shortcut_path']:
+            game['shortcut_path'] = game.get('shortcut', '')
+    
+    return jsonify({
+        'status': 'ok',
+        'pc_id': pc_id,
+        'games': games,
+        'total': len(games),
+        'last_scan': pcs[pc_id].get('last_game_scan')
+    })
+
+@app.route('/api/games/launch-installed', methods=['POST'])
+def launch_installed_game():
+    try:
+        data = request.json
+        pc_id = data.get('pc_id')
+        game_name = data.get('game_name')
+        executable = data.get('executable')
+        shortcut = data.get('shortcut', '')
+        
+        print(f"[GAME LAUNCH] Received request: {data}")
+        
+        if not pc_id:
+            return jsonify({'status': 'error', 'message': 'Missing PC ID'}), 400
+        
+        if not executable:
+            return jsonify({'status': 'error', 'message': 'Missing executable path'}), 400
+        
+        if pc_id not in pcs:
+            return jsonify({'status': 'error', 'message': 'PC not found'}), 404
+        
+        # Find the game in installed games to verify
+        games = pcs[pc_id].get('installed_games', [])
+        game_found = None
+        for g in games:
+            if g.get('name') == game_name:
+                game_found = g
+                break
+        
+        if game_found:
+            # Use the stored path if available
+            stored_executable = game_found.get('executable_path', game_found.get('executable', ''))
+            if stored_executable:
+                executable = stored_executable
+                print(f"[GAME LAUNCH] Using stored path: {executable}")
+        
+        if pc_id not in pending_commands:
+            pending_commands[pc_id] = []
+        
+        pending_commands[pc_id].append({
+            'action': 'LAUNCH_GAME',
+            'parameter': executable,
+            'game_name': game_name,
+            'shortcut': shortcut,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        print(f"[GAME LAUNCH] {pc_id} -> {game_name} ({executable})")
+        
+        return jsonify({
+            'status': 'ok',
+            'message': f'Launching {game_name} on {pc_id}'
+        })
+    
+    except Exception as e:
+        print(f"[ERROR] Launch failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    
 # ============================================================
 # WALLET SYSTEM
 # ============================================================
@@ -361,36 +498,46 @@ def heartbeat():
     if not pc_id:
         return jsonify({'status': 'error', 'message': 'No PC ID'}), 400
     
-    # ============================================================
-    # DEBUG: Log what we received
-    # ============================================================
-    print(f"[DEBUG] Received data from {pc_id}")
-    print(f"[DEBUG] Keys: {list(data.keys())}")
+    # Extract hostname
+    hostname = data.get('hostname', 'Unknown')
+    if hostname == 'Unknown' and 'features' in data:
+        hostname = data['features'].get('hostname', 'Unknown')
     
-    # ============================================================
-    # CHECK: Is this telemetry data? (has 'features')
-    # ============================================================
+    # Extract IP address
+    ip_address = data.get('ip_address', '')
+    if not ip_address and 'features' in data:
+        ip_address = data['features'].get('ip_address', '')
+    if not ip_address:
+        ip_address = request.remote_addr
+    
+    # Extract hardware
+    hardware = data.get('hardware', {})
+    if not hardware and 'features' in data:
+        features = data['features']
+        hardware = {
+            'cpu': features.get('cpu_name', 'Unknown CPU'),
+            'gpu': features.get('gpu_name', 'Unknown GPU'),
+            'ram': features.get('ram_size', 'Unknown RAM')
+        }
+    
     if 'features' in data:
-        # This is telemetry - extract the data!
         features = data.get('features', {})
         
-        print(f"[DEBUG] Features keys: {list(features.keys())}")
-        print(f"[DEBUG] CPU: {features.get('cpu_usage', 0)}%")
-        print(f"[DEBUG] RAM: {features.get('ram_usage', 0)}%")
-        print(f"[DEBUG] GPU: {features.get('gpu_usage', 0)}%")
-        print(f"[DEBUG] Game: {features.get('process_name', 'none')}")
-        
-        # Initialize PC if needed
         if pc_id not in pcs:
-            pcs[pc_id] = {}
+            pcs[pc_id] = {
+                'hostname': hostname,
+                'first_seen': datetime.now().isoformat(),
+                'hardware': hardware,
+                'current_ip': ip_address
+            }
+        else:
+            pcs[pc_id]['hardware'] = hardware if hardware else pcs[pc_id].get('hardware', {})
+            pcs[pc_id]['current_ip'] = ip_address
         
-        # Get existing hostname if available
-        existing_hostname = pcs[pc_id].get('hostname', 'Unknown')
-        
-        # Update with telemetry data
         pcs[pc_id].update({
             'status': 'online',
             'last_telemetry': datetime.now().isoformat(),
+            'hostname': hostname,
             'cpu': features.get('cpu_usage', 0),
             'ram': features.get('ram_usage', 0),
             'gpu': features.get('gpu_usage', 0),
@@ -398,44 +545,35 @@ def heartbeat():
             'game': features.get('process_name', 'none'),
             'window_title': features.get('window_title', ''),
             'is_fullscreen': features.get('is_fullscreen', 0),
-            'hostname': existing_hostname  # Keep existing hostname
+            'window_width': features.get('window_width', 0),
+            'window_height': features.get('window_height', 0),
+            'current_ip': ip_address
         })
-        
-        # Also update heartbeat for backward compatibility
-        if 'heartbeat' not in pcs[pc_id]:
-            pcs[pc_id]['heartbeat'] = {}
-        pcs[pc_id]['heartbeat'].update({
-            'cpu_usage': features.get('cpu_usage', 0),
-            'ram_usage': features.get('ram_usage', 0),
-            'gpu_usage': features.get('gpu_usage', 0),
-            'cpu_temp': features.get('cpu_temperature', 0),
-            'active_game': features.get('process_name', 'none')
-        })
-        
-        print(f"[TELEMETRY] {pc_id} - CPU: {features.get('cpu_usage', 0)}% RAM: {features.get('ram_usage', 0)}%")
         
         return jsonify({'status': 'ok'})
     
-    # ============================================================
-    # This is a simple heartbeat (no 'features')
-    # ============================================================
-    client_ip = request.remote_addr
-    hostname = data.get('hostname', 'unknown')
+    # Simple heartbeat
+    if hostname == 'Unknown':
+        hostname = data.get('hostname', 'unknown')
     
     if pc_id not in pcs:
-        pcs[pc_id] = {}
+        pcs[pc_id] = {
+            'hostname': hostname,
+            'first_seen': datetime.now().isoformat(),
+            'hardware': hardware,
+            'current_ip': ip_address
+        }
     
-    # Only update status, don't overwrite CPU/RAM
     pcs[pc_id].update({
         'status': 'online',
         'last_heartbeat': datetime.now().isoformat(),
         'hostname': hostname,
-        'current_ip': client_ip
+        'current_ip': ip_address,
+        'hardware': hardware if hardware else pcs[pc_id].get('hardware', {})
     })
     
-    print(f"[HEARTBEAT] {hostname} ({pc_id}) - Status: online")
-    
     return jsonify({'status': 'ok'})
+
 # ============================================================
 # SESSION MANAGEMENT
 # ============================================================
@@ -455,8 +593,7 @@ def start_session():
     
     current_game = 'unknown'
     if pc_id in pcs:
-        telemetry = pcs[pc_id].get('telemetry', {})
-        current_game = telemetry.get('process_name', telemetry.get('active_game', 'unknown'))
+        current_game = pcs[pc_id].get('game', 'unknown')
     
     sessions[pc_id] = {
         'user': user_name,
@@ -474,8 +611,6 @@ def start_session():
         'action': 'START_SESSION',
         'parameter': user_name
     })
-    
-    print(f"[SESSION START] {pc_id}: {user_name} - Game: {current_game}")
     
     return jsonify({
         'status': 'ok',
@@ -619,17 +754,18 @@ def clear_alerts():
 def get_pcs():
     result = []
     for pc_id, pc_data in pcs.items():
-        heartbeat = pc_data.get('heartbeat', {})
-        telemetry = pc_data.get('telemetry', {})
         is_in_session = pc_id in sessions and sessions[pc_id].get('status') == 'active'
         session = sessions.get(pc_id, None)
         
-        game = telemetry.get('process_name', heartbeat.get('active_game', 'none'))
+        game = pc_data.get('game', 'none')
         if game == 'none' or game == '':
-            game = heartbeat.get('active_game', 'none')
+            game = 'Aucun jeu'
         
         if is_in_session and session:
             game = session.get('game', game)
+        
+        hardware = pc_data.get('hardware', {})
+        ip_address = pc_data.get('current_ip', '')
         
         result.append({
             'id': pc_id,
@@ -640,17 +776,18 @@ def get_pcs():
             'game': game,
             'session': session,
             'session_type': session.get('game_type', 'none') if session else 'none',
-            'status': heartbeat.get('status', 'online'),
-            'cpu': heartbeat.get('cpu_usage', 0),
-            'ram': heartbeat.get('ram_usage', 0),
-            'gpu': heartbeat.get('gpu_usage', 0),
-            'cpu_temp': heartbeat.get('cpu_temp', 0),
-            'gpu_temp': heartbeat.get('gpu_temp', 0),
-            'ip_address': pc_data.get('current_ip', heartbeat.get('ip_address', '')),
-            'hardware': heartbeat.get('hardware', {}),
+            'status': pc_data.get('status', 'online'),
+            'cpu': pc_data.get('cpu', 0),
+            'ram': pc_data.get('ram', 0),
+            'gpu': pc_data.get('gpu', 0),
+            'cpu_temp': pc_data.get('cpu_temp', 0),
+            'gpu_temp': pc_data.get('gpu_temp', 0),
+            'ip_address': ip_address,
+            'hardware': hardware,
             'wallet_balance': wallets.get(pc_id, {}).get('balance', 0),
             'membership': memberships.get(pc_id, {}),
-            'branch': pc_data.get('branch', 'main')
+            'branch': pc_data.get('branch', 'main'),
+            'installed_games_count': len(pc_data.get('installed_games', []))
         })
     
     return jsonify({
@@ -665,39 +802,42 @@ def get_pc_details(pc_id):
         return jsonify({'status': 'error', 'message': 'PC not found'}), 404
     
     pc_data = pcs[pc_id]
-    heartbeat = pc_data.get('heartbeat', {})
-    telemetry = pc_data.get('telemetry', {})
     
     is_in_session = pc_id in sessions and sessions[pc_id].get('status') == 'active'
     session = sessions.get(pc_id, None)
     
-    game = heartbeat.get('active_game', 'none')
+    game = pc_data.get('game', 'none')
     if game == 'none' or game == '':
         game = 'Aucun jeu'
     
     if is_in_session and session:
         game = session.get('game', game)
     
+    hardware = pc_data.get('hardware', {})
+    ip_address = pc_data.get('current_ip', '')
+    
     return jsonify({
         'id': pc_id,
         'mac_address': pc_id,
-        'hostname': heartbeat.get('hostname', 'Unknown'),
+        'hostname': pc_data.get('hostname', 'Unknown'),
         'online': pc_data.get('status', 'offline') == 'online',
         'in_session': is_in_session,
         'game': game,
         'session': session,
-        'status': heartbeat.get('status', 'online'),
+        'status': pc_data.get('status', 'online'),
         'last_heartbeat': pc_data.get('last_heartbeat'),
-        'cpu': heartbeat.get('cpu_usage', 0),
-        'ram': heartbeat.get('ram_usage', 0),
-        'gpu': heartbeat.get('gpu_usage', 0),
-        'cpu_temp': heartbeat.get('cpu_temp', 0),
-        'gpu_temp': heartbeat.get('gpu_temp', 0),
-        'ip_address': pc_data.get('current_ip', heartbeat.get('ip_address', '')),
-        'hardware': heartbeat.get('hardware', {}),
+        'last_telemetry': pc_data.get('last_telemetry'),
+        'cpu': pc_data.get('cpu', 0),
+        'ram': pc_data.get('ram', 0),
+        'gpu': pc_data.get('gpu', 0),
+        'cpu_temp': pc_data.get('cpu_temp', 0),
+        'gpu_temp': pc_data.get('gpu_temp', 0),
+        'ip_address': ip_address,
+        'hardware': hardware,
         'wallet_balance': wallets.get(pc_id, {}).get('balance', 0),
         'membership': memberships.get(pc_id, {}),
-        'branch': pc_data.get('branch', 'main')
+        'branch': pc_data.get('branch', 'main'),
+        'installed_games': pc_data.get('installed_games', [])
     })
 
 # ============================================================
@@ -749,6 +889,7 @@ if __name__ == '__main__':
     print("   - Multi-Branch Support")
     print("   - Game Catalog")
     print("   - Anti-Theft Alerts")
+    print("   - Installed Games Discovery")
     print("=" * 60)
     
     start_discovery()
