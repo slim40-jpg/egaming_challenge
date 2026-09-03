@@ -1,0 +1,9 @@
+*.exe
+*.o
+*.dll
+*.so
+*.dSYM
+build/
+dist/
+.git/
+*.md

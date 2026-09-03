@@ -1,0 +1,97 @@
+# docker-compose.yml
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: gaming-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=gaming_house
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - gaming-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend Server
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: gaming-backend
+    restart: unless-stopped
+    ports:
+      - "8003:8003"      # HTTP API
+      - "9000:9000/udp"  # Discovery broadcast
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SERVER_IP=0.0.0.0
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/gaming_house
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - gaming-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/api/pcs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend
+  frontend:
+    build:
+      context: ./egaming-frontend
+      dockerfile: Dockerfile
+    container_name: gaming-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8003
+    depends_on:
+      - backend
+    networks:
+      - gaming-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Agent (runs in a container for testing)
+  agent:
+    build:
+      context: ./agent_software
+      dockerfile: Dockerfile
+    container_name: gaming-agent
+    restart: unless-stopped
+    environment:
+      - SERVER_URL=http://backend:8003
+    depends_on:
+      - backend
+    networks:
+      - gaming-network
+    # Note: The agent is a Windows executable, won't run in Docker on Linux
+    # For testing, you can run it directly on Windows
+    profiles:
+      - agent
+
+volumes:
+  postgres_data:
+
+networks:
+  gaming-network:
+    driver: bridge
+    name: gaming-network

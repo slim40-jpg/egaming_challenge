@@ -1366,6 +1366,16 @@ bool SendInstalledGames()
     std::vector<InstalledGame> games = ScanInstalledGames();
     std::string macAddress = GetMACAddress();
 
+    // Debug: Log all games and their paths
+    printf("[GAME SEND] Sending %zu games to server\n", games.size());
+    for (const auto &game : games)
+    {
+        printf("[GAME SEND] Game: %s\n", game.name.c_str());
+        printf("[GAME SEND]   Executable: %s\n", game.executable_path.c_str());
+        printf("[GAME SEND]   Shortcut: %s\n", game.shortcut_path.c_str());
+        printf("[GAME SEND]   Running: %s\n", game.is_running ? "true" : "false");
+    }
+
     std::stringstream json;
     json << "{"
          << "\"pc_id\":\"" << macAddress << "\","
@@ -1375,10 +1385,27 @@ bool SendInstalledGames()
     for (size_t i = 0; i < games.size(); i++)
     {
         const auto &game = games[i];
+
+        // Escape for JSON
+        auto escapeJson = [](const std::string &str)
+        {
+            std::string result;
+            for (char c : str)
+            {
+                if (c == '\\')
+                    result += "\\\\";
+                else if (c == '"')
+                    result += "\\\"";
+                else
+                    result += c;
+            }
+            return result;
+        };
+
         json << "{"
-             << "\"name\":\"" << EscapeJsonString(game.name) << "\","
-             << "\"executable\":\"" << EscapeJsonString(game.executable_path) << "\","
-             << "\"shortcut\":\"" << EscapeJsonString(game.shortcut_path) << "\","
+             << "\"name\":\"" << escapeJson(game.name) << "\","
+             << "\"executable_path\":\"" << escapeJson(game.executable_path) << "\","
+             << "\"shortcut_path\":\"" << escapeJson(game.shortcut_path) << "\","
              << "\"platform\":\"" << game.platform << "\","
              << "\"is_running\":" << (game.is_running ? "true" : "false")
              << "}";
@@ -1390,7 +1417,7 @@ bool SendInstalledGames()
 
     std::string data = json.str();
 
-    LogMessage("[GAME SCAN] Found " + std::to_string(games.size()) + " games");
+    printf("[GAME SEND] Full JSON: %s\n", data.c_str());
 
     return SendTelemetryToEndpoint(data, "/api/games/installed");
 }
@@ -1452,87 +1479,153 @@ bool SendHeartbeat(const std::string &hardwareData)
 // ============================================================
 // COMMAND EXECUTION
 // ============================================================
-
 void ExecuteCommand(const std::string &command, const std::string &parameter)
 {
+    LogMessage("[EXEC] Command received: " + command + " with param: " + parameter);
+
     if (command == "LOCK")
     {
+        LogMessage("[EXEC] Attempting to lock workstation...");
+
+        // Try LockWorkStation first
         if (LockWorkStation())
         {
             g_Status = "locked";
-            LogMessage("Screen locked successfully");
+            LogMessage("[EXEC] ✅ Screen locked successfully");
         }
         else
         {
-            LogMessage("Failed to lock screen");
+            DWORD error = GetLastError();
+            LogMessage("[EXEC] ❌ Failed to lock screen. Error: " + std::to_string(error));
+
+            // Try alternative method using rundll32
+            LogMessage("[EXEC] 🔄 Trying alternative lock method...");
+            system("rundll32.exe user32.dll,LockWorkStation");
+
+            // Check if it worked
+            Sleep(500);
+            LogMessage("[EXEC] Alternative lock attempted");
+            g_Status = "locked";
         }
     }
     else if (command == "SHUTDOWN")
     {
+        LogMessage("[EXEC] Attempting to shutdown system...");
+
+        // Try to get shutdown privilege
         HANDLE hToken;
         TOKEN_PRIVILEGES tkp;
 
         if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
         {
-            LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
-            tkp.PrivilegeCount = 1;
-            tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+            if (LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid))
+            {
+                tkp.PrivilegeCount = 1;
+                tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-            if (GetLastError() == ERROR_SUCCESS)
-            {
-                ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER);
-            }
-            else
-            {
-                system("shutdown /s /t 5");
+                if (AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0))
+                {
+                    if (GetLastError() == ERROR_SUCCESS)
+                    {
+                        LogMessage("[EXEC] 🔄 Shutdown privilege obtained");
+                        if (ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER))
+                        {
+                            LogMessage("[EXEC] ✅ Shutdown initiated successfully");
+                            CloseHandle(hToken);
+                            return;
+                        }
+                        else
+                        {
+                            LogMessage("[EXEC] ❌ ExitWindowsEx failed. Error: " + std::to_string(GetLastError()));
+                        }
+                    }
+                }
             }
             CloseHandle(hToken);
         }
+
+        // Fallback: use system command
+        LogMessage("[EXEC] 🔄 Trying system shutdown command...");
+        int result = system("shutdown /s /f /t 10 /c \"Gaming Agent: System shutdown initiated by admin\"");
+        if (result == 0)
+        {
+            LogMessage("[EXEC] ✅ Shutdown command sent successfully");
+        }
         else
         {
-            system("shutdown /s /t 5");
+            LogMessage("[EXEC] ❌ System shutdown failed with code: " + std::to_string(result));
+
+            // Second fallback: PowerShell
+            LogMessage("[EXEC] 🔄 Trying PowerShell shutdown...");
+            system("powershell -Command \"Stop-Computer -Force\"");
+            LogMessage("[EXEC] PowerShell shutdown attempted");
         }
     }
     else if (command == "RESTART")
     {
+        LogMessage("[EXEC] Attempting to restart system...");
+
+        // Try to get shutdown privilege
         HANDLE hToken;
         TOKEN_PRIVILEGES tkp;
 
         if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
         {
-            LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
-            tkp.PrivilegeCount = 1;
-            tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+            if (LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid))
+            {
+                tkp.PrivilegeCount = 1;
+                tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-            if (GetLastError() == ERROR_SUCCESS)
-            {
-                ExitWindowsEx(EWX_REBOOT | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER);
-            }
-            else
-            {
-                system("shutdown /r /t 5");
+                if (AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0))
+                {
+                    if (GetLastError() == ERROR_SUCCESS)
+                    {
+                        LogMessage("[EXEC] 🔄 Restart privilege obtained");
+                        if (ExitWindowsEx(EWX_REBOOT | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER))
+                        {
+                            LogMessage("[EXEC] ✅ Restart initiated successfully");
+                            CloseHandle(hToken);
+                            return;
+                        }
+                        else
+                        {
+                            LogMessage("[EXEC] ❌ ExitWindowsEx failed. Error: " + std::to_string(GetLastError()));
+                        }
+                    }
+                }
             }
             CloseHandle(hToken);
         }
+
+        // Fallback: use system command
+        LogMessage("[EXEC] 🔄 Trying system restart command...");
+        int result = system("shutdown /r /f /t 10 /c \"Gaming Agent: System restart initiated by admin\"");
+        if (result == 0)
+        {
+            LogMessage("[EXEC] ✅ Restart command sent successfully");
+        }
         else
         {
-            system("shutdown /r /t 5");
+            LogMessage("[EXEC] ❌ System restart failed with code: " + std::to_string(result));
+
+            // Second fallback: PowerShell
+            LogMessage("[EXEC] 🔄 Trying PowerShell restart...");
+            system("powershell -Command \"Restart-Computer -Force\"");
+            LogMessage("[EXEC] PowerShell restart attempted");
         }
     }
     else if (command == "START_SESSION")
     {
         g_SessionUser = parameter.empty() ? "Player" : parameter;
         g_Status = "in_session";
-        LogMessage("Session started for: " + g_SessionUser);
+        LogMessage("[EXEC] ✅ Session started for: " + g_SessionUser);
     }
     else if (command == "END_SESSION")
     {
-        LogMessage("=== ENDING SESSION ===");
+        LogMessage("[EXEC] Ending session...");
         g_SessionUser = "";
         g_Status = "online";
-        LogMessage("Session ended");
+        LogMessage("[EXEC] ✅ Session ended");
     }
     else if (command == "LAUNCH_GAME")
     {
@@ -1648,9 +1741,10 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
             }
         }
     }
+
     else
     {
-        LogMessage("Unknown command: " + command);
+        LogMessage("[EXEC] ❌ Unknown command: " + command);
     }
 }
 
@@ -1728,7 +1822,7 @@ bool PollForCommands()
     bool hasCommands = false;
     if (!fullResponse.empty())
     {
-        // Find the JSON body - look for [ or { after the headers
+        // Find the JSON body
         size_t jsonStart = fullResponse.find('[');
         if (jsonStart == std::string::npos)
         {
@@ -1745,14 +1839,11 @@ bool PollForCommands()
                 jsonBody.pop_back();
             }
 
-            LogMessage("[POLL] Received response: " + jsonBody);
+            LogMessage("[POLL] Response: " + jsonBody);
 
             if (!jsonBody.empty() && jsonBody != "[]" && jsonBody != "null")
             {
-                // Try to parse each command
-                // The response is an array of commands: [{"action":"LAUNCH_GAME","parameter":"C:\\...","game_name":"Audacity","shortcut":"...","timestamp":"..."}]
-
-                // Look for each command object
+                // Parse each command object
                 size_t pos = 0;
                 while (pos < jsonBody.length())
                 {
@@ -1787,7 +1878,7 @@ bool PollForCommands()
                         }
                     }
 
-                    // Extract parameter (executable path)
+                    // Extract parameter
                     std::string parameter = "";
                     size_t paramPos = cmdObj.find("\"parameter\"");
                     if (paramPos != std::string::npos)
@@ -1822,54 +1913,37 @@ bool PollForCommands()
                         }
                     }
 
-                    // Extract game_name
-                    std::string gameName = "";
-                    size_t namePos = cmdObj.find("\"game_name\"");
-                    if (namePos != std::string::npos)
-                    {
-                        size_t colonPos = cmdObj.find(":", namePos);
-                        if (colonPos != std::string::npos)
-                        {
-                            size_t quoteStart = cmdObj.find("\"", colonPos + 1);
-                            if (quoteStart != std::string::npos)
-                            {
-                                size_t quoteEnd = cmdObj.find("\"", quoteStart + 1);
-                                if (quoteEnd != std::string::npos)
-                                {
-                                    gameName = cmdObj.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
-                                }
-                            }
-                        }
-                    }
+                    LogMessage("[POLL] Command: '" + action + "', Param: '" + parameter + "'");
 
-                    LogMessage("[POLL] Command: " + action + ", Param: " + parameter + ", Game: " + gameName);
-
-                    if (!action.empty() && !parameter.empty())
+                    if (!action.empty())
                     {
+                        // Execute the command
                         if (action == "LAUNCH_GAME")
                         {
-                            LogMessage("[POLL] Executing LAUNCH_GAME: " + gameName + " at " + parameter);
                             ExecuteCommand(action, parameter);
                             hasCommands = true;
                         }
                         else if (action == "LOCK")
                         {
+                            LogMessage("[POLL] Executing LOCK command");
                             ExecuteCommand(action, "");
                             hasCommands = true;
                         }
                         else if (action == "SHUTDOWN")
                         {
+                            LogMessage("[POLL] Executing SHUTDOWN command");
                             ExecuteCommand(action, "");
                             hasCommands = true;
                         }
                         else if (action == "RESTART")
                         {
+                            LogMessage("[POLL] Executing RESTART command");
                             ExecuteCommand(action, "");
                             hasCommands = true;
                         }
                         else if (action == "START_SESSION")
                         {
-                            ExecuteCommand(action, "Player");
+                            ExecuteCommand(action, parameter.empty() ? "Player" : parameter);
                             hasCommands = true;
                         }
                         else if (action == "END_SESSION")
@@ -1885,7 +1959,6 @@ bool PollForCommands()
 
     return hasCommands;
 }
-
 // ============================================================
 // USB MONITORING THREAD - UPDATED WITH HARDWARE
 // ============================================================
