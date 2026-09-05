@@ -24,30 +24,53 @@ services:
       timeout: 5s
       retries: 5
 
-  # Backend Server
-  backend:
+  # Cloud Server (Reservations)
+  cloud:
     build:
-      context: ./server
+      context: ./cloud_server
       dockerfile: Dockerfile
-    container_name: gaming-backend
+    container_name: gaming-cloud
     restart: unless-stopped
     ports:
-      - "8003:8003"      # HTTP API
-      - "9000:9000/udp"  # Discovery broadcast
+      - "5000:5000"
     environment:
-      - PYTHONUNBUFFERED=1
-      - SERVER_IP=0.0.0.0
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/gaming_house
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloud_db
+      - LOCAL_SERVER_URL=http://host.docker.internal:8003
+      - CENTER_ID=main
+      - ENV=production
     depends_on:
       db:
         condition: service_healthy
     networks:
       - gaming-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/api/pcs"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Local Server (Gaming Center)
+  local:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: gaming-local
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+      - "9000:9000/udp"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/gaming_house
+      - CLOUD_API_URL=http://cloud:5000
+      - CENTER_ID=main
+      - SYNC_INTERVAL=10
+      - JWT_SECRET_KEY=your-super-secret-key
+    depends_on:
+      db:
+        condition: service_healthy
+      cloud:
+        condition: service_started
+    networks:
+      - gaming-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # Frontend
   frontend:
@@ -59,34 +82,30 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8003
+      - NEXT_PUBLIC_API_URL=http://localhost:8003
     depends_on:
-      - backend
+      - local
     networks:
       - gaming-network
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
-  # Agent (runs in a container for testing)
-  agent:
-    build:
-      context: ./agent_software
-      dockerfile: Dockerfile
-    container_name: gaming-agent
+  # ngrok tunnel for cloud server
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: gaming-ngrok
     restart: unless-stopped
+    ports:
+      - "4040:4040"  # ngrok web interface
     environment:
-      - SERVER_URL=http://backend:8003
+      - NGROK_AUTHTOKEN=${NGROK_AUTH_TOKEN}
+    command:
+      - "http"
+      - "--log=stdout"
+      - "--log-level=info"
+      - "cloud:5000"
     depends_on:
-      - backend
+      - cloud
     networks:
       - gaming-network
-    # Note: The agent is a Windows executable, won't run in Docker on Linux
-    # For testing, you can run it directly on Windows
-    profiles:
-      - agent
 
 volumes:
   postgres_data:

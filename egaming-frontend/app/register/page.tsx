@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
+import { cloudRegister } from '@/lib/api';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function RegisterPage() {
     password: '',
     confirmPassword: '',
     full_name: '',
+    phone: ''
   });
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -29,7 +31,7 @@ export default function RegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    const { username, email, password, confirmPassword, full_name } = formData;
+    const { username, email, password, confirmPassword, full_name, phone } = formData;
 
     if (!username || !email || !password || !confirmPassword) {
       toast.error('Veuillez remplir tous les champs obligatoires');
@@ -49,23 +51,16 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/auth/register`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          username,
-          email,
-          password,
-          full_name: full_name || username,
-        }),
+      const data = await cloudRegister({
+        username,
+        email,
+        password,
+        full_name: full_name || username,
+        phone
       });
 
-      const data = await response.json();
-
       if (data.status === 'ok') {
-        toast.success('Inscription réussie ! Vous pouvez maintenant vous connecter');
+        toast.success('Inscription réussie ! Connectez-vous maintenant');
         router.push('/login');
       } else {
         toast.error(data.message || 'Erreur lors de l\'inscription');
@@ -80,14 +75,12 @@ export default function RegisterPage() {
   return (
     <div className="min-h-screen bg-[#0a0a1a] flex items-center justify-center p-4">
       <div className="bg-gradient-to-br from-[#1a1a2e] to-[#0f0f23] rounded-2xl p-8 w-full max-w-md border border-[#2a2a4a]">
-        {/* Header */}
         <div className="text-center mb-8">
           <div className="text-5xl mb-3">🎮</div>
           <h1 className="text-2xl font-bold text-[#e94560]">Créer un compte</h1>
           <p className="text-gray-400 text-sm mt-1">Rejoignez Ninety Gaming House</p>
         </div>
 
-        {/* Register Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-gray-400 text-sm font-medium mb-1">
@@ -130,6 +123,20 @@ export default function RegisterPage() {
               onChange={handleChange}
               className="w-full bg-[#0a0a1a] border border-[#2a2a4a] rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:border-[#e94560] focus:outline-none transition"
               placeholder="John Doe"
+            />
+          </div>
+
+          <div>
+            <label className="block text-gray-400 text-sm font-medium mb-1">
+              Téléphone
+            </label>
+            <input
+              type="tel"
+              name="phone"
+              value={formData.phone}
+              onChange={handleChange}
+              className="w-full bg-[#0a0a1a] border border-[#2a2a4a] rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:border-[#e94560] focus:outline-none transition"
+              placeholder="+216 99 999 999"
             />
           </div>
 
@@ -189,7 +196,6 @@ export default function RegisterPage() {
           </button>
         </form>
 
-        {/* Login Link */}
         <p className="text-center text-gray-400 text-sm mt-6">
           Déjà un compte ?{' '}
           <Link href="/login" className="text-[#e94560] hover:underline">

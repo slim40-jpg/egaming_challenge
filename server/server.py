@@ -1,5 +1,4 @@
-# server.py - Local Gaming Center Server
-# This runs on the local server in the gaming center
+# server.py - Local Gaming Center Server (FIXED)
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -15,21 +14,25 @@ import netifaces
 import uuid
 import requests
 from functools import wraps
+from sqlalchemy import text
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ============================================================
 # APP INITIALIZATION
 # ============================================================
 
 app = Flask(__name__, static_folder='../frontend')
-CORS(app)
+CORS(app , origins=["http://localhost:8003", "http://localhost:3000"], supports_credentials=True)
 
 # ============================================================
 # CLOUD SYNC CONFIGURATION
 # ============================================================
 
-CLOUD_API_URL = os.environ.get('CLOUD_API_URL', 'https://your-cloud-app.railway.app')  # Your cloud service URL
+CLOUD_API_URL = os.environ.get('CLOUD_API_URL', '')
 CENTER_ID = os.environ.get('CENTER_ID', 'main')
-SYNC_INTERVAL = int(os.environ.get('SYNC_INTERVAL', '10'))  # seconds
+SYNC_INTERVAL = int(os.environ.get('SYNC_INTERVAL', '10'))
 
 # ============================================================
 # CONFIGURATION
@@ -38,16 +41,14 @@ SYNC_INTERVAL = int(os.environ.get('SYNC_INTERVAL', '10'))  # seconds
 SERVER_PORT = 8003
 DISCOVERY_PORT = 9000
 
-# Database configuration
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/gaming_house')
 
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-super-secret-jwt-key-change-in-production')
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'your-super-secret-jwt-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 
-# Initialize extensions
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
@@ -64,7 +65,6 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(200), nullable=False)
     role = db.Column(db.String(20), nullable=False, default='player')
-    
     full_name = db.Column(db.String(100))
     phone = db.Column(db.String(20))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -120,7 +120,6 @@ class PC(db.Model):
     last_heartbeat = db.Column(db.DateTime)
     last_telemetry = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
     installed_games = db.Column(db.JSON, default=[])
     
     def to_dict(self):
@@ -270,7 +269,6 @@ class Reservation(db.Model):
     user_phone = db.Column(db.String(20))
     notes = db.Column(db.Text)
     
-    # Cloud sync fields
     source = db.Column(db.String(20), default='local')
     cloud_id = db.Column(db.String(36))
     synced = db.Column(db.Boolean, default=True)
@@ -470,73 +468,111 @@ MEMBERSHIP_PLANS = {
 }
 
 # ============================================================
-# CLOUD SYNC FUNCTIONS
+# CLOUD SYNC FUNCTIONS - FIXED with app.app_context()
 # ============================================================
 
+_last_sync_log_time = 0
+_sync_interval_counter = 0
+# ============================================================
+# SERVER DISCOVERY - STARTUP
+# ============================================================
+
+def start_discovery():
+    """Start the discovery broadcast in a separate thread"""
+    discovery_thread = threading.Thread(target=start_discovery_broadcast, daemon=True)
+    discovery_thread.start()
+    print("[DISCOVERY] Discovery broadcast thread started")
+
 def sync_reservations_from_cloud():
-    """Sync reservations from cloud to local database"""
+    """Sync reservations from cloud to local database - SMART VERSION"""
+    global _last_sync_log_time, _sync_interval_counter
+    
     if not CLOUD_API_URL:
         return
     
-    try:
-        print(f"[SYNC] Checking cloud for new reservations...")
-        response = requests.get(
-            f"{CLOUD_API_URL}/api/sync/center/{CENTER_ID}",
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            cloud_reservations = data.get('reservations', [])
-            
-            if cloud_reservations:
-                print(f"[SYNC] Found {len(cloud_reservations)} new cloud reservations")
-            
-            for cr in cloud_reservations:
-                # Check if reservation already exists locally
-                existing = Reservation.query.filter_by(cloud_id=cr['id']).first()
-                if not existing:
-                    # Create local reservation
-                    reservation = Reservation(
-                        id=str(uuid.uuid4()),
-                        pc_id=cr['pc_id'],
-                        user_name=cr['user_name'],
-                        user_email=cr.get('user_email', ''),
-                        user_phone=cr.get('user_phone', ''),
-                        start_time=datetime.fromisoformat(cr['start_time']),
-                        end_time=datetime.fromisoformat(cr['end_time']),
-                        status=cr['status'],
-                        source='cloud',
-                        cloud_id=cr['id'],
-                        synced=True
-                    )
-                    db.session.add(reservation)
-                    print(f"[SYNC] ✅ New cloud reservation: {cr['id']} - {cr['user_name']}")
-            
-            db.session.commit()
-            
-            # Confirm sync to cloud
-            if cloud_reservations:
-                reservation_ids = [r['id'] for r in cloud_reservations]
-                try:
-                    requests.post(
-                        f"{CLOUD_API_URL}/api/sync/confirm",
-                        json={'reservation_ids': reservation_ids},
-                        timeout=5
-                    )
-                    print(f"[SYNC] ✅ Confirmed {len(reservation_ids)} reservations")
-                except Exception as e:
-                    print(f"[SYNC] ⚠️ Could not confirm sync: {e}")
-        else:
-            print(f"[SYNC] ❌ Cloud returned status: {response.status_code}")
+    _sync_interval_counter += 1
     
-    except requests.exceptions.ConnectionError:
-        print(f"[SYNC] ❌ Could not connect to cloud: {CLOUD_API_URL}")
-    except Exception as e:
-        print(f"[SYNC] ❌ Error: {e}")
+    with app.app_context():
+        try:
+            # Only log every 10th check to avoid spam
+            should_log = _sync_interval_counter % 10 == 0
+            
+            if should_log:
+                print(f"[SYNC] Checking cloud for new reservations...")
+            
+            response = requests.get(
+                f"{CLOUD_API_URL}/api/sync/center/{CENTER_ID}",
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                cloud_reservations = data.get('reservations', [])
+                
+                if cloud_reservations:
+                    print(f"[SYNC] 📥 Found {len(cloud_reservations)} new reservations from cloud")
+                    
+                    for cr in cloud_reservations:
+                        existing = Reservation.query.filter_by(cloud_id=cr['id']).first()
+                        if not existing:
+                            # Find or create PC
+                            pc = PC.query.get(cr['pc_id'])
+                            if not pc:
+                                pc = PC(id=cr['pc_id'], hostname=f"PC-{cr['pc_id']}")
+                                db.session.add(pc)
+                                db.session.commit()
+                            
+                            reservation = Reservation(
+                                id=str(uuid.uuid4()),
+                                pc_id=cr['pc_id'],
+                                user_name=cr['user_name'],
+                                user_email=cr.get('user_email', ''),
+                                user_phone=cr.get('user_phone', ''),
+                                start_time=datetime.fromisoformat(cr['start_time']),
+                                end_time=datetime.fromisoformat(cr['end_time']),
+                                status=cr['status'],
+                                source='cloud',
+                                cloud_id=cr['id'],
+                                synced=True
+                            )
+                            db.session.add(reservation)
+                            print(f"[SYNC] ✅ New cloud reservation: {cr['user_name']} - PC: {cr['pc_id']}")
+                    
+                    db.session.commit()
+                    
+                    # Confirm sync
+                    reservation_ids = [r['id'] for r in cloud_reservations]
+                    try:
+                        requests.post(
+                            f"{CLOUD_API_URL}/api/sync/confirm",
+                            json={'reservation_ids': reservation_ids},
+                            timeout=5
+                        )
+                        print(f"[SYNC] ✅ Confirmed {len(reservation_ids)} reservations")
+                    except:
+                        pass
+                elif should_log:
+                    print(f"[SYNC] ✅ No new reservations")
+                    
+            elif response.status_code == 404:
+                if should_log:
+                    print(f"[SYNC] ⚠️ Cloud endpoint not found (404)")
+            else:
+                if should_log:
+                    print(f"[SYNC] ⚠️ Cloud returned status: {response.status_code}")
+        
+        except requests.exceptions.ConnectionError:
+            if should_log:
+                print(f"[SYNC] ❌ Could not connect to cloud: {CLOUD_API_URL}")
+        except requests.exceptions.Timeout:
+            if should_log:
+                print(f"[SYNC] ⚠️ Cloud connection timeout")
+        except Exception as e:
+            print(f"[SYNC] ❌ Error: {e}")
+            db.session.rollback()
 
 def start_sync_thread():
-    """Start background sync thread"""
+    """Start background sync thread - NON-BLOCKING"""
     def sync_loop():
         while True:
             sync_reservations_from_cloud()
@@ -548,21 +584,19 @@ def start_sync_thread():
         print(f"[SYNC] ✅ Sync thread started (interval: {SYNC_INTERVAL}s)")
         print(f"[SYNC] ✅ Cloud URL: {CLOUD_API_URL}")
         print(f"[SYNC] ✅ Center ID: {CENTER_ID}")
+        print(f"[SYNC] 💡 Sync runs in background, no spam!")
     else:
         print("[SYNC] ⚠️ Cloud sync disabled (CLOUD_API_URL not set)")
-
 # ============================================================
 # DATABASE INITIALIZATION
 # ============================================================
 
 def init_db():
-    """Initialize database with error handling"""
     try:
         with app.app_context():
             db.create_all()
             print("[DB] ✅ Tables created successfully")
             
-            # Create default admin if not exists
             admin = User.query.filter_by(role='admin').first()
             if not admin:
                 admin = User(
@@ -683,374 +717,8 @@ def login():
         'role': user.role
     })
 
-@app.route('/api/auth/refresh', methods=['POST'])
-@jwt_required(refresh=True)
-def refresh_token():
-    user_id = get_jwt_identity()
-    user = User.query.get(user_id)
-    
-    if not user:
-        return jsonify({'status': 'error', 'message': 'User not found'}), 404
-    
-    access_token = create_access_token(
-        identity=user.id,
-        additional_claims={'role': user.role, 'username': user.username}
-    )
-    
-    return jsonify({
-        'status': 'ok',
-        'access_token': access_token
-    })
-
-@app.route('/api/auth/me', methods=['GET'])
-@login_required
-def get_current_user():
-    user = User.query.get(request.user_id)
-    if not user:
-        return jsonify({'status': 'error', 'message': 'User not found'}), 404
-    
-    return jsonify({
-        'status': 'ok',
-        'user': user.to_dict()
-    })
-
-@app.route('/api/auth/logout', methods=['POST'])
-@login_required
-def logout():
-    return jsonify({'status': 'ok', 'message': 'Logged out successfully'})
-
 # ============================================================
-# ADMIN ENDPOINTS
-# ============================================================
-
-@app.route('/api/admin/users', methods=['GET'])
-@role_required(['admin'])
-def admin_get_users():
-    users = User.query.all()
-    return jsonify({
-        'status': 'ok',
-        'users': [u.to_dict() for u in users],
-        'total': len(users)
-    })
-
-@app.route('/api/admin/users/<user_id>', methods=['PUT'])
-@role_required(['admin'])
-def admin_update_user(user_id):
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'status': 'error', 'message': 'User not found'}), 404
-    
-    data = request.json
-    if 'role' in data:
-        user.role = data['role']
-    if 'full_name' in data:
-        user.full_name = data['full_name']
-    if 'phone' in data:
-        user.phone = data['phone']
-    if 'is_active' in data:
-        user.is_active = data['is_active']
-    
-    db.session.commit()
-    
-    return jsonify({
-        'status': 'ok',
-        'user': user.to_dict()
-    })
-
-@app.route('/api/admin/users/<user_id>', methods=['DELETE'])
-@role_required(['admin'])
-def admin_delete_user(user_id):
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'status': 'error', 'message': 'User not found'}), 404
-    
-    if user.role == 'admin':
-        return jsonify({'status': 'error', 'message': 'Cannot delete admin user'}), 400
-    
-    db.session.delete(user)
-    db.session.commit()
-    
-    return jsonify({'status': 'ok', 'message': 'User deleted'})
-
-# ============================================================
-# GAME ENDPOINTS
-# ============================================================
-
-@app.route('/api/games', methods=['GET'])
-@login_required
-def get_games():
-    return jsonify({
-        'status': 'ok',
-        'games': GAME_CATALOG
-    })
-
-@app.route('/api/games/launch', methods=['POST'])
-@role_required(['admin', 'staff'])
-def launch_game():
-    data = request.json
-    pc_id = data.get('pc_id')
-    game_id = data.get('game_id')
-    
-    if pc_id not in pcs_cache:
-        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
-    
-    game = next((g for g in GAME_CATALOG if g['id'] == game_id), None)
-    if not game:
-        return jsonify({'status': 'error', 'message': 'Game not found'}), 404
-    
-    if pc_id not in pending_commands:
-        pending_commands[pc_id] = []
-    
-    pending_commands[pc_id].append({
-        'action': 'LAUNCH_GAME',
-        'parameter': game['executable'],
-        'timestamp': datetime.now().isoformat()
-    })
-    
-    print(f"[GAME LAUNCH] {pc_id} -> {game['name']}")
-    return jsonify({'status': 'ok', 'message': f'Launching {game["name"]}'})
-
-# ============================================================
-# INSTALLED GAMES ENDPOINTS
-# ============================================================
-
-@app.route('/api/games/installed', methods=['POST'])
-def receive_installed_games():
-    try:
-        data = request.json
-        pc_id = data.get('pc_id')
-        hostname = data.get('hostname', 'Unknown')
-        games = data.get('games', [])
-        
-        if not pc_id:
-            return jsonify({'status': 'error', 'message': 'No PC ID'}), 400
-        
-        pc = PC.query.get(pc_id)
-        if not pc:
-            pc = PC(id=pc_id, hostname=hostname)
-            db.session.add(pc)
-        
-        pc.installed_games = games
-        pc.last_telemetry = datetime.utcnow()
-        db.session.commit()
-        
-        pcs_cache[pc_id] = pc.to_dict()
-        
-        print(f"[GAMES] {pc_id} - Found {len(games)} games")
-        return jsonify({'status': 'ok', 'message': f'Received {len(games)} games'})
-    
-    except Exception as e:
-        print(f"[ERROR] Failed to receive games: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/api/pc/<pc_id>/games', methods=['GET'])
-@login_required
-def get_pc_games(pc_id):
-    pc = PC.query.get(pc_id)
-    if not pc:
-        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
-    
-    games = pc.installed_games or []
-    return jsonify({
-        'status': 'ok',
-        'pc_id': pc_id,
-        'games': games,
-        'total': len(games)
-    })
-
-@app.route('/api/games/launch-installed', methods=['POST'])
-@role_required(['admin', 'staff'])
-def launch_installed_game():
-    try:
-        data = request.json
-        pc_id = data.get('pc_id')
-        game_name = data.get('game_name')
-        executable = data.get('executable')
-        shortcut = data.get('shortcut', '')
-        
-        print(f"[GAME LAUNCH] Received request: {data}")
-        
-        if not pc_id:
-            return jsonify({'status': 'error', 'message': 'Missing PC ID'}), 400
-        
-        if pc_id not in pcs:
-            return jsonify({'status': 'error', 'message': 'PC not found'}), 404
-        
-        games = pcs[pc_id].get('installed_games', [])
-        
-        game_found = None
-        for g in games:
-            if g.get('name') == game_name:
-                game_found = g
-                break
-        
-        if not game_found:
-            for g in games:
-                if g.get('name', '').lower() == game_name.lower():
-                    game_found = g
-                    break
-        
-        if game_found:
-            stored_executable = game_found.get('executable_path', '')
-            if stored_executable:
-                executable = stored_executable
-                print(f"[GAME LAUNCH] Using stored path: {executable}")
-            else:
-                executable = game_found.get('executable', '')
-                if executable:
-                    print(f"[GAME LAUNCH] Using executable field: {executable}")
-        
-        if not executable:
-            return jsonify({'status': 'error', 'message': 'No executable path found for this game'}), 400
-        
-        if pc_id not in pending_commands:
-            pending_commands[pc_id] = []
-        
-        pending_commands[pc_id].append({
-            'action': 'LAUNCH_GAME',
-            'parameter': executable,
-            'game_name': game_name,
-            'shortcut': shortcut,
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        print(f"[GAME LAUNCH] {pc_id} -> {game_name} ({executable})")
-        
-        return jsonify({
-            'status': 'ok',
-            'message': f'Launching {game_name} on {pc_id}'
-        })
-    
-    except Exception as e:
-        print(f"[ERROR] Launch failed: {e}")
-
-# ============================================================
-# WALLET ENDPOINTS
-# ============================================================
-
-@app.route('/api/wallet', methods=['GET'])
-@login_required
-def get_wallet():
-    user = User.query.get(request.user_id)
-    wallet = Wallet.query.filter_by(user_id=user.id).first()
-    
-    if not wallet:
-        wallet = Wallet(user_id=user.id, balance=0)
-        db.session.add(wallet)
-        db.session.commit()
-    
-    transactions = Transaction.query.filter_by(user_id=user.id).order_by(Transaction.created_at.desc()).limit(20).all()
-    
-    return jsonify({
-        'status': 'ok',
-        'wallet': wallet.to_dict(),
-        'transactions': [t.to_dict() for t in transactions]
-    })
-
-@app.route('/api/wallet/topup', methods=['POST'])
-@login_required
-def topup_wallet():
-    user = User.query.get(request.user_id)
-    data = request.json
-    amount = data.get('amount', 0)
-    
-    if amount <= 0:
-        return jsonify({'status': 'error', 'message': 'Amount must be positive'}), 400
-    
-    wallet = Wallet.query.filter_by(user_id=user.id).first()
-    if not wallet:
-        wallet = Wallet(user_id=user.id, balance=0)
-        db.session.add(wallet)
-    
-    wallet.balance += amount
-    wallet.updated_at = datetime.utcnow()
-    
-    transaction = Transaction(
-        wallet_id=wallet.id,
-        user_id=user.id,
-        type='topup',
-        amount=amount,
-        new_balance=wallet.balance,
-        description=f'Top-up of {amount}€'
-    )
-    db.session.add(transaction)
-    db.session.commit()
-    
-    return jsonify({
-        'status': 'ok',
-        'wallet': wallet.to_dict(),
-        'transaction': transaction.to_dict()
-    })
-
-# ============================================================
-# MEMBERSHIP ENDPOINTS
-# ============================================================
-
-@app.route('/api/membership/plans', methods=['GET'])
-def get_membership_plans():
-    return jsonify({'status': 'ok', 'plans': MEMBERSHIP_PLANS})
-
-@app.route('/api/membership', methods=['GET'])
-@login_required
-def get_membership():
-    user = User.query.get(request.user_id)
-    membership = Membership.query.filter_by(user_id=user.id).first()
-    
-    if not membership:
-        return jsonify({'status': 'ok', 'membership': None})
-    
-    return jsonify({'status': 'ok', 'membership': membership.to_dict()})
-
-@app.route('/api/membership/buy', methods=['POST'])
-@login_required
-def buy_membership():
-    user = User.query.get(request.user_id)
-    data = request.json
-    plan = data.get('plan')
-    
-    if plan not in MEMBERSHIP_PLANS:
-        return jsonify({'status': 'error', 'message': 'Invalid plan'}), 400
-    
-    plan_data = MEMBERSHIP_PLANS[plan]
-    
-    wallet = Wallet.query.filter_by(user_id=user.id).first()
-    if not wallet or wallet.balance < plan_data['price']:
-        return jsonify({'status': 'error', 'message': 'Insufficient balance'}), 400
-    
-    wallet.balance -= plan_data['price']
-    wallet.updated_at = datetime.utcnow()
-    
-    transaction = Transaction(
-        wallet_id=wallet.id,
-        user_id=user.id,
-        type='membership',
-        amount=-plan_data['price'],
-        new_balance=wallet.balance,
-        description=f'Purchased {plan} membership'
-    )
-    db.session.add(transaction)
-    
-    membership = Membership(
-        user_id=user.id,
-        plan=plan,
-        plan_name=plan_data['name'],
-        hours_total=plan_data['hours'],
-        hours_left=plan_data['hours'],
-        purchase_date=datetime.utcnow(),
-        expiry_date=datetime.utcnow() + timedelta(days=30),
-        is_active=True
-    )
-    db.session.add(membership)
-    db.session.commit()
-    
-    return jsonify({
-        'status': 'ok',
-        'membership': membership.to_dict(),
-        'balance': wallet.balance
-    })
-
-# ============================================================
-# RESERVATION ENDPOINTS (UPDATED WITH CLOUD SYNC)
+# RESERVATION ENDPOINTS
 # ============================================================
 
 @app.route('/api/reservations', methods=['GET'])
@@ -1058,7 +726,6 @@ def buy_membership():
 def get_reservations():
     user = User.query.get(request.user_id)
     
-    # Get local reservations
     if user.role in ['admin', 'staff']:
         local_reservations = Reservation.query.filter_by(source='local').order_by(Reservation.start_time).all()
         cloud_reservations = Reservation.query.filter_by(source='cloud').order_by(Reservation.start_time).all()
@@ -1066,18 +733,13 @@ def get_reservations():
         local_reservations = Reservation.query.filter_by(user_id=user.id, source='local').order_by(Reservation.start_time).all()
         cloud_reservations = Reservation.query.filter_by(user_email=user.email, source='cloud').order_by(Reservation.start_time).all()
     
-    # Combine and sort
     all_reservations = list(local_reservations) + list(cloud_reservations)
     all_reservations.sort(key=lambda x: x.start_time)
     
     return jsonify({
         'status': 'ok',
         'reservations': [r.to_dict() for r in all_reservations],
-        'total': len(all_reservations),
-        'sources': {
-            'local': len(local_reservations),
-            'cloud': len(cloud_reservations)
-        }
+        'total': len(all_reservations)
     })
 
 @app.route('/api/reservations/create', methods=['POST'])
@@ -1103,7 +765,6 @@ def create_reservation():
     if start >= end:
         return jsonify({'status': 'error', 'message': 'End time must be after start time'}), 400
     
-    # Check conflicts (both local and cloud reservations)
     existing = Reservation.query.filter_by(pc_id=pc_id, status='pending').all()
     for r in existing:
         if r.start_time < end and r.end_time > start:
@@ -1144,43 +805,220 @@ def cancel_reservation(reservation_id):
     return jsonify({'status': 'ok', 'message': 'Reservation cancelled'})
 
 # ============================================================
-# BRANCH ENDPOINTS
+# PC & COMMAND ENDPOINTS
 # ============================================================
 
-@app.route('/api/branches', methods=['GET'])
+@app.route('/api/pcs', methods=['GET'])
 @login_required
-def get_branches():
-    branches = Branch.query.all()
+def get_pcs():
+    user = User.query.get(request.user_id)
+    pcs = PC.query.all()
+    result = []
+    
+    for pc in pcs:
+        pc_data = pc.to_dict()
+        pc_data['in_session'] = pc.id in sessions_cache and sessions_cache[pc.id].get('status') == 'active'
+        pc_data['session'] = sessions_cache.get(pc.id)
+        
+        wallet = Wallet.query.filter_by(user_id=user.id).first()
+        pc_data['wallet_balance'] = wallet.balance if wallet else 0
+        
+        result.append(pc_data)
+    
     return jsonify({
         'status': 'ok',
-        'branches': [b.to_dict() for b in branches]
+        'pcs': result,
+        'active_sessions': len([s for s in sessions_cache.values() if s.get('status') == 'active'])
     })
 
-@app.route('/api/branches', methods=['POST'])
-@role_required(['admin'])
-def create_branch():
-    data = request.json
-    name = data.get('name')
-    address = data.get('address', '')
-    city = data.get('city', '')
-    phone = data.get('phone', '')
+@app.route('/api/pc/<pc_id>/availability', methods=['GET'])
+def get_pc_availability(pc_id):
+    """Check if a PC is available at a given time (for cloud server)"""
+    start_time = request.args.get('start_time')
+    end_time = request.args.get('end_time')
     
-    if not name:
-        return jsonify({'status': 'error', 'message': 'Branch name required'}), 400
+    if not start_time or not end_time:
+        return jsonify({'available': False, 'message': 'Missing time parameters'}), 400
     
-    branch = Branch(
-        name=name,
-        address=address,
-        city=city,
-        phone=phone
-    )
-    db.session.add(branch)
-    db.session.commit()
+    try:
+        start = datetime.fromisoformat(start_time)
+        end = datetime.fromisoformat(end_time)
+    except:
+        return jsonify({'available': False, 'message': 'Invalid date format'}), 400
+    
+    pc = PC.query.get(pc_id)
+    if not pc:
+        return jsonify({'available': False, 'message': 'PC not found'}), 404
+    
+    if pc.status != 'online':
+        return jsonify({'available': False, 'message': 'PC is offline'}), 400
+    
+    existing = Reservation.query.filter_by(
+        pc_id=pc_id,
+        status='pending'
+    ).filter(
+        Reservation.start_time < end,
+        Reservation.end_time > start
+    ).all()
     
     return jsonify({
-        'status': 'ok',
-        'branch': branch.to_dict()
+        'available': len(existing) == 0,
+        'conflicts': len(existing)
     })
+
+@app.route('/api/reservations/cloud', methods=['POST'])
+def sync_cloud_reservation():
+    """Receive a reservation from cloud server"""
+    try:
+        data = request.json
+        
+        existing = Reservation.query.filter_by(cloud_id=data.get('id')).first()
+        if existing:
+            return jsonify({'status': 'ok', 'message': 'Reservation already exists'})
+        
+        pc = PC.query.get(data.get('pc_id'))
+        if not pc:
+            pc = PC(id=data.get('pc_id'), hostname=f"PC-{data.get('pc_id')}")
+            db.session.add(pc)
+            db.session.commit()
+        
+        reservation = Reservation(
+            id=str(uuid.uuid4()),
+            pc_id=data.get('pc_id'),
+            user_name=data.get('user_name'),
+            user_email=data.get('user_email', ''),
+            user_phone=data.get('user_phone', ''),
+            start_time=datetime.fromisoformat(data.get('start_time')),
+            end_time=datetime.fromisoformat(data.get('end_time')),
+            status=data.get('status', 'pending'),
+            source='cloud',
+            cloud_id=data.get('id'),
+            synced=True
+        )
+        db.session.add(reservation)
+        db.session.commit()
+        
+        print(f"[CLOUD SYNC] ✅ Received reservation: {data.get('id')}")
+        
+        return jsonify({'status': 'ok', 'message': 'Reservation synced'})
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"[CLOUD SYNC] ❌ Error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Simple health check for cloud server"""
+    return jsonify({
+        'status': 'ok',
+        'service': 'local-server',
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+@app.route('/api/pc/<pc_id>', methods=['GET'])
+@login_required
+def get_pc_details(pc_id):
+    pc = PC.query.get(pc_id)
+    if not pc:
+        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
+    
+    result = pc.to_dict()
+    result['in_session'] = pc_id in sessions_cache and sessions_cache[pc_id].get('status') == 'active'
+    result['session'] = sessions_cache.get(pc_id)
+    
+    user = User.query.get(request.user_id)
+    wallet = Wallet.query.filter_by(user_id=user.id).first()
+    result['wallet_balance'] = wallet.balance if wallet else 0
+    
+    return jsonify(result)
+
+@app.route('/api/command', methods=['POST'])
+@role_required(['admin', 'staff'])
+def send_command():
+    data = request.json
+    pc_id = data.get('pc_id')
+    command = data.get('command')
+    parameter = data.get('parameter', '')
+    
+    if not pc_id or not command:
+        return jsonify({'status': 'error', 'message': 'Missing pc_id or command'}), 400
+    
+    if pc_id not in pending_commands:
+        pending_commands[pc_id] = []
+    
+    pending_commands[pc_id].append({
+        'action': command,
+        'parameter': parameter,
+        'timestamp': datetime.now().isoformat()
+    })
+    
+    print(f"[COMMAND] Sending {command} to {pc_id}")
+    return jsonify({'status': 'ok', 'message': f'Command {command} sent'})
+
+@app.route('/api/commands/<pc_id>', methods=['GET'])
+def get_commands(pc_id):
+    commands = []
+    if pc_id in pending_commands and pending_commands[pc_id]:
+        commands = pending_commands[pc_id]
+        pending_commands[pc_id] = []
+        print(f"[POLL] Sending {len(commands)} command(s) to {pc_id}")
+    return jsonify(commands)
+
+@app.route('/api/heartbeat', methods=['POST'])
+def heartbeat():
+    data = request.json
+    
+    pc_id = data.get('pc_id') or data.get('mac_address')
+    if not pc_id:
+        return jsonify({'status': 'error', 'message': 'No PC ID'}), 400
+    
+    hostname = data.get('hostname', 'Unknown')
+    ip_address = data.get('ip_address', '')
+    if not ip_address and 'features' in data:
+        ip_address = data['features'].get('ip_address', '')
+    if not ip_address:
+        ip_address = request.remote_addr
+    
+    hardware = data.get('hardware', {})
+    if not hardware and 'features' in data:
+        features = data['features']
+        hardware = {
+            'cpu': features.get('cpu_name', 'Unknown CPU'),
+            'gpu': features.get('gpu_name', 'Unknown GPU'),
+            'ram': features.get('ram_size', 'Unknown RAM')
+        }
+    
+    pc = PC.query.get(pc_id)
+    if not pc:
+        pc = PC(id=pc_id)
+        db.session.add(pc)
+    
+    pc.hostname = hostname
+    pc.ip_address = ip_address
+    pc.status = 'online'
+    pc.last_heartbeat = datetime.utcnow()
+    
+    if hardware:
+        pc.cpu_model = hardware.get('cpu', pc.cpu_model)
+        pc.gpu_model = hardware.get('gpu', pc.gpu_model)
+        pc.ram_size = hardware.get('ram', pc.ram_size)
+    
+    if 'features' in data:
+        features = data['features']
+        pc.cpu_usage = features.get('cpu_usage', 0)
+        pc.gpu_usage = features.get('gpu_usage', 0)
+        pc.ram_usage = features.get('ram_usage', 0)
+        pc.cpu_temp = features.get('cpu_temperature', 0)
+        pc.current_game = features.get('process_name', 'none')
+        pc.window_title = features.get('window_title', '')
+        pc.is_fullscreen = features.get('is_fullscreen', False)
+        pc.last_telemetry = datetime.utcnow()
+    
+    db.session.commit()
+    pcs_cache[pc_id] = pc.to_dict()
+    
+    return jsonify({'status': 'ok'})
 
 # ============================================================
 # SESSION ENDPOINTS
@@ -1339,219 +1177,283 @@ def end_session():
         }
     })
 
-@app.route('/api/session/status/<pc_id>', methods=['GET'])
-@login_required
-def get_session_status(pc_id):
-    if pc_id in sessions_cache:
-        return jsonify({
-            'pc_id': pc_id,
-            'session': sessions_cache[pc_id]
-        })
-    return jsonify({
-        'pc_id': pc_id,
-        'session': None
-    })
+# ============================================================
+# WALLET ENDPOINTS
+# ============================================================
 
-@app.route('/api/session/history', methods=['GET'])
+@app.route('/api/wallet', methods=['GET'])
 @login_required
-def get_session_history():
-    limit = request.args.get('limit', 50, type=int)
+def get_wallet():
     user = User.query.get(request.user_id)
+    wallet = Wallet.query.filter_by(user_id=user.id).first()
     
-    if user.role in ['admin', 'staff']:
-        history = session_history[-limit:]
-    else:
-        history = [h for h in session_history if h.get('user') == user.username][-limit:]
+    if not wallet:
+        wallet = Wallet(user_id=user.id, balance=0)
+        db.session.add(wallet)
+        db.session.commit()
+    
+    transactions = Transaction.query.filter_by(user_id=user.id).order_by(Transaction.created_at.desc()).limit(20).all()
     
     return jsonify({
         'status': 'ok',
-        'history': history,
-        'total': len(history)
+        'wallet': wallet.to_dict(),
+        'transactions': [t.to_dict() for t in transactions]
+    })
+
+@app.route('/api/wallet/topup', methods=['POST'])
+@login_required
+def topup_wallet():
+    user = User.query.get(request.user_id)
+    data = request.json
+    amount = data.get('amount', 0)
+    
+    if amount <= 0:
+        return jsonify({'status': 'error', 'message': 'Amount must be positive'}), 400
+    
+    wallet = Wallet.query.filter_by(user_id=user.id).first()
+    if not wallet:
+        wallet = Wallet(user_id=user.id, balance=0)
+        db.session.add(wallet)
+    
+    wallet.balance += amount
+    wallet.updated_at = datetime.utcnow()
+    
+    transaction = Transaction(
+        wallet_id=wallet.id,
+        user_id=user.id,
+        type='topup',
+        amount=amount,
+        new_balance=wallet.balance,
+        description=f'Top-up of {amount}€'
+    )
+    db.session.add(transaction)
+    db.session.commit()
+    
+    return jsonify({
+        'status': 'ok',
+        'wallet': wallet.to_dict(),
+        'transaction': transaction.to_dict()
     })
 
 # ============================================================
-# COMMAND ENDPOINTS
+# INSTALLED GAMES ENDPOINTS
 # ============================================================
 
-@app.route('/api/commands/<pc_id>', methods=['GET'])
-def get_commands(pc_id):
-    commands = []
-    if pc_id in pending_commands and pending_commands[pc_id]:
-        commands = pending_commands[pc_id]
-        pending_commands[pc_id] = []
-        print(f"[POLL] Sending {len(commands)} command(s) to {pc_id}")
-    return jsonify(commands)
+@app.route('/api/games/installed', methods=['POST'])
+def receive_installed_games():
+    """Receive installed games from agent"""
+    try:
+        data = request.json
+        pc_id = data.get('pc_id')
+        hostname = data.get('hostname', 'Unknown')
+        games = data.get('games', [])
+        
+        if not pc_id:
+            return jsonify({'status': 'error', 'message': 'No PC ID'}), 400
+        
+        # Find or create PC
+        pc = PC.query.get(pc_id)
+        if not pc:
+            pc = PC(id=pc_id, hostname=hostname)
+            db.session.add(pc)
+        
+        # Store installed games
+        pc.installed_games = games
+        pc.last_telemetry = datetime.utcnow()
+        db.session.commit()
+        
+        pcs_cache[pc_id] = pc.to_dict()
+        
+        print(f"[GAMES] {pc_id} - Found {len(games)} games")
+        return jsonify({'status': 'ok', 'message': f'Received {len(games)} games'})
+    
+    except Exception as e:
+        print(f"[ERROR] Failed to receive games: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/api/command', methods=['POST'])
+@app.route('/api/pc/<pc_id>/games', methods=['GET'])
+@login_required
+def get_pc_games(pc_id):
+    """Get installed games for a PC"""
+    pc = PC.query.get(pc_id)
+    if not pc:
+        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
+    
+    games = pc.installed_games or []
+    return jsonify({
+        'status': 'ok',
+        'pc_id': pc_id,
+        'games': games,
+        'total': len(games)
+    })
+
+@app.route('/api/games/launch-installed', methods=['POST'])
 @role_required(['admin', 'staff'])
-def send_command():
+def launch_installed_game():
+    """Launch an installed game on a PC"""
+    try:
+        data = request.json
+        pc_id = data.get('pc_id')
+        game_name = data.get('game_name')
+        executable = data.get('executable')
+        shortcut = data.get('shortcut', '')
+        
+        print(f"[GAME LAUNCH] Received request: {data}")
+        
+        if not pc_id or not executable:
+            return jsonify({'status': 'error', 'message': 'Missing PC ID or executable'}), 400
+        
+        if pc_id not in pcs_cache:
+            return jsonify({'status': 'error', 'message': 'PC not found'}), 404
+        
+        # Find the game in installed games
+        games = PC.query.get(pc_id).installed_games or []
+        game_found = None
+        for g in games:
+            if g.get('name') == game_name:
+                game_found = g
+                break
+        
+        if not game_found:
+            for g in games:
+                if g.get('name', '').lower() == game_name.lower():
+                    game_found = g
+                    break
+        
+        if game_found:
+            stored_executable = game_found.get('executable_path', '')
+            if stored_executable:
+                executable = stored_executable
+                print(f"[GAME LAUNCH] Using stored path: {executable}")
+        
+        if pc_id not in pending_commands:
+            pending_commands[pc_id] = []
+        
+        pending_commands[pc_id].append({
+            'action': 'LAUNCH_GAME',
+            'parameter': executable,
+            'game_name': game_name,
+            'shortcut': shortcut,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        print(f"[GAME LAUNCH] {pc_id} -> {game_name} ({executable})")
+        
+        return jsonify({
+            'status': 'ok',
+            'message': f'Launching {game_name} on {pc_id}'
+        })
+    
+    except Exception as e:
+        print(f"[ERROR] Launch failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# ============================================================
+# GAME CATALOG ENDPOINTS
+# ============================================================
+
+@app.route('/api/games', methods=['GET'])
+@login_required
+def get_games():
+    """Get the game catalog"""
+    return jsonify({
+        'status': 'ok',
+        'games': GAME_CATALOG
+    })
+
+@app.route('/api/games/launch', methods=['POST'])
+@role_required(['admin', 'staff'])
+def launch_game():
+    """Launch a game from the catalog"""
     data = request.json
     pc_id = data.get('pc_id')
-    command = data.get('command')
-    parameter = data.get('parameter', '')
+    game_id = data.get('game_id')
     
-    if not pc_id or not command:
-        return jsonify({'status': 'error', 'message': 'Missing pc_id or command'}), 400
+    if pc_id not in pcs_cache:
+        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
+    
+    game = next((g for g in GAME_CATALOG if g['id'] == game_id), None)
+    if not game:
+        return jsonify({'status': 'error', 'message': 'Game not found'}), 404
     
     if pc_id not in pending_commands:
         pending_commands[pc_id] = []
     
     pending_commands[pc_id].append({
-        'action': command,
-        'parameter': parameter,
+        'action': 'LAUNCH_GAME',
+        'parameter': game['executable'],
         'timestamp': datetime.now().isoformat()
     })
     
-    print(f"[COMMAND] Sending {command} to {pc_id}")
-    return jsonify({'status': 'ok', 'message': f'Command {command} sent'})
-
+    print(f"[GAME LAUNCH] {pc_id} -> {game['name']}")
+    return jsonify({'status': 'ok', 'message': f'Launching {game["name"]}'})
+        
 # ============================================================
-# HEARTBEAT & TELEMETRY
+# MEMBERSHIP ENDPOINTS
 # ============================================================
 
-@app.route('/api/heartbeat', methods=['POST'])
-def heartbeat():
+@app.route('/api/membership/plans', methods=['GET'])
+def get_membership_plans():
+    return jsonify({'status': 'ok', 'plans': MEMBERSHIP_PLANS})
+
+@app.route('/api/membership', methods=['GET'])
+@login_required
+def get_membership():
+    user = User.query.get(request.user_id)
+    membership = Membership.query.filter_by(user_id=user.id).first()
+    
+    if not membership:
+        return jsonify({'status': 'ok', 'membership': None})
+    
+    return jsonify({'status': 'ok', 'membership': membership.to_dict()})
+
+@app.route('/api/membership/buy', methods=['POST'])
+@login_required
+def buy_membership():
+    user = User.query.get(request.user_id)
     data = request.json
+    plan = data.get('plan')
     
-    pc_id = data.get('pc_id') or data.get('mac_address')
-    if not pc_id:
-        return jsonify({'status': 'error', 'message': 'No PC ID'}), 400
+    if plan not in MEMBERSHIP_PLANS:
+        return jsonify({'status': 'error', 'message': 'Invalid plan'}), 400
     
-    hostname = data.get('hostname', 'Unknown')
-    ip_address = data.get('ip_address', '')
-    if not ip_address and 'features' in data:
-        ip_address = data['features'].get('ip_address', '')
-    if not ip_address:
-        ip_address = request.remote_addr
+    plan_data = MEMBERSHIP_PLANS[plan]
     
-    hardware = data.get('hardware', {})
-    if not hardware and 'features' in data:
-        features = data['features']
-        hardware = {
-            'cpu': features.get('cpu_name', 'Unknown CPU'),
-            'gpu': features.get('gpu_name', 'Unknown GPU'),
-            'ram': features.get('ram_size', 'Unknown RAM')
-        }
-    
-    pc = PC.query.get(pc_id)
-    if not pc:
-        pc = PC(id=pc_id)
-        db.session.add(pc)
-    
-    pc.hostname = hostname
-    pc.ip_address = ip_address
-    pc.status = 'online'
-    pc.last_heartbeat = datetime.utcnow()
-    
-    if hardware:
-        pc.cpu_model = hardware.get('cpu', pc.cpu_model)
-        pc.gpu_model = hardware.get('gpu', pc.gpu_model)
-        pc.ram_size = hardware.get('ram', pc.ram_size)
-    
-    if 'features' in data:
-        features = data['features']
-        pc.cpu_usage = features.get('cpu_usage', 0)
-        pc.gpu_usage = features.get('gpu_usage', 0)
-        pc.ram_usage = features.get('ram_usage', 0)
-        pc.cpu_temp = features.get('cpu_temperature', 0)
-        pc.current_game = features.get('process_name', 'none')
-        pc.window_title = features.get('window_title', '')
-        pc.is_fullscreen = features.get('is_fullscreen', False)
-        pc.last_telemetry = datetime.utcnow()
-    
-    db.session.commit()
-    pcs_cache[pc_id] = pc.to_dict()
-    
-    return jsonify({'status': 'ok'})
-
-# ============================================================
-# ANTI-THEFT ALERTS
-# ============================================================
-
-@app.route('/api/alerts', methods=['GET'])
-@login_required
-def get_alerts():
-    return jsonify({
-        'status': 'ok',
-        'alerts': usb_alerts[-20:],
-        'total': len(usb_alerts)
-    })
-
-@app.route('/api/alerts/clear', methods=['POST'])
-@role_required(['admin', 'staff'])
-def clear_alerts():
-    global usb_alerts
-    usb_alerts = []
-    return jsonify({'status': 'ok'})
-
-# ============================================================
-# PC DATA ENDPOINTS
-# ============================================================
-
-@app.route('/api/pcs', methods=['GET'])
-@login_required
-def get_pcs():
-    user = User.query.get(request.user_id)
-    pcs = PC.query.all()
-    result = []
-    
-    for pc in pcs:
-        pc_data = pc.to_dict()
-        pc_data['in_session'] = pc.id in sessions_cache and sessions_cache[pc.id].get('status') == 'active'
-        pc_data['session'] = sessions_cache.get(pc.id)
-        
-        wallet = Wallet.query.filter_by(user_id=user.id).first()
-        pc_data['wallet_balance'] = wallet.balance if wallet else 0
-        
-        result.append(pc_data)
-    
-    return jsonify({
-        'status': 'ok',
-        'pcs': result,
-        'active_sessions': len([s for s in sessions_cache.values() if s.get('status') == 'active'])
-    })
-
-@app.route('/api/pc/<pc_id>', methods=['GET'])
-@login_required
-def get_pc_details(pc_id):
-    pc = PC.query.get(pc_id)
-    if not pc:
-        return jsonify({'status': 'error', 'message': 'PC not found'}), 404
-    
-    result = pc.to_dict()
-    result['in_session'] = pc_id in sessions_cache and sessions_cache[pc_id].get('status') == 'active'
-    result['session'] = sessions_cache.get(pc_id)
-    
-    user = User.query.get(request.user_id)
     wallet = Wallet.query.filter_by(user_id=user.id).first()
-    result['wallet_balance'] = wallet.balance if wallet else 0
+    if not wallet or wallet.balance < plan_data['price']:
+        return jsonify({'status': 'error', 'message': 'Insufficient balance'}), 400
     
-    return jsonify(result)
-
-# ============================================================
-# SERVE FRONTEND
-# ============================================================
-
-@app.route('/')
-def index():
-    return send_from_directory('../frontend', 'index.html')
-
-@app.route('/pc/<pc_id>')
-def pc_detail(pc_id):
-    return send_from_directory('../frontend', 'pc-detail.html')
-
-@app.route('/<path:path>')
-def serve_static(path):
-    return send_from_directory('../frontend', path)
-
-# ============================================================
-# SERVER DISCOVERY - STARTUP
-# ============================================================
-
-def start_discovery():
-    discovery_thread = threading.Thread(target=start_discovery_broadcast, daemon=True)
-    discovery_thread.start()
-    print("[DISCOVERY] Discovery broadcast thread started")
+    wallet.balance -= plan_data['price']
+    wallet.updated_at = datetime.utcnow()
+    
+    transaction = Transaction(
+        wallet_id=wallet.id,
+        user_id=user.id,
+        type='membership',
+        amount=-plan_data['price'],
+        new_balance=wallet.balance,
+        description=f'Purchased {plan} membership'
+    )
+    db.session.add(transaction)
+    
+    membership = Membership(
+        user_id=user.id,
+        plan=plan,
+        plan_name=plan_data['name'],
+        hours_total=plan_data['hours'],
+        hours_left=plan_data['hours'],
+        purchase_date=datetime.utcnow(),
+        expiry_date=datetime.utcnow() + timedelta(days=30),
+        is_active=True
+    )
+    db.session.add(membership)
+    db.session.commit()
+    
+    return jsonify({
+        'status': 'ok',
+        'membership': membership.to_dict(),
+        'balance': wallet.balance
+    })
 
 # ============================================================
 # MAIN ENTRY POINT
@@ -1562,9 +1464,6 @@ if __name__ == '__main__':
     print("   NINETY GAMING HOUSE - LOCAL SERVER")
     print("=" * 60)
     print(f"🌐 Server running at: http://{SERVER_IP}:{SERVER_PORT}")
-    print("=" * 60)
-    print("📡 Discovery broadcast on port 9000")
-    print("🔄 Broadcasting every 2 seconds")
     print("=" * 60)
     print("☁️ Cloud Sync:")
     if CLOUD_API_URL:
@@ -1577,32 +1476,12 @@ if __name__ == '__main__':
     print("🔐 Authentication:")
     print("   - Admin: admin / admin123")
     print("=" * 60)
-    print("🎮 Features:")
-    print("   - PC Node Tracking")
-    print("   - Session & Financial Control")
-    print("   - Remote Administration")
-    print("   - Hardware Telemetry")
-    print("   - Electronic Wallet")
-    print("   - Subscription Plans")
-    print("   - Reservation System (Local + Cloud)")
-    print("   - Multi-Branch Support")
-    print("   - Game Catalog")
-    print("   - Anti-Theft Alerts")
-    print("   - Installed Games Discovery")
-    print("   - User Authentication & Roles")
-    print("=" * 60)
     
-    # Initialize database
-    print("\n[DB] Initializing database...")
     if not init_db():
         print("\n[ERROR] Database initialization failed!")
-        print("Please fix the database connection and restart the server.")
         exit(1)
     
-    # Start cloud sync thread
     start_sync_thread()
-    
-    # Start discovery
     start_discovery()
     
     app.run(host='0.0.0.0', port=SERVER_PORT, debug=True, threaded=True)

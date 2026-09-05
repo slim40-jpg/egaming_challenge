@@ -1,4 +1,4 @@
-// frontend/app/login/page.tsx
+// app/login/page.tsx
 
 'use client';
 
@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
+import { cloudLogin } from '@/lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,10 +16,9 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
-    // Check if user is already logged in
-    const token = localStorage.getItem('access_token');
+    const token = localStorage.getItem('cloud_access_token');
     if (token) {
-      const role = localStorage.getItem('role') || 'player';
+      console.log('✅ Already logged in, redirecting to dashboard');
       router.push('/dashboard');
     }
   }, [router]);
@@ -34,40 +34,21 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ username, password }),
-      });
-
-      const data = await response.json();
+      console.log('🔐 Logging in with:', username);
+      const data = await cloudLogin(username, password);
 
       if (data.status === 'ok') {
-        // Store tokens in localStorage
-        localStorage.setItem('access_token', data.access_token);
-        localStorage.setItem('refresh_token', data.refresh_token);
-        localStorage.setItem('user', JSON.stringify(data.user));
-        localStorage.setItem('role', data.role);
-
-        // Set cookies for middleware
-        document.cookie = `access_token=${data.access_token}; path=/; max-age=3600`;
-        document.cookie = `role=${data.role}; path=/; max-age=3600`;
-
-        toast.success(`Bienvenue ${data.user.full_name || data.user.username}!`);
+        console.log('✅ Login successful');
+        console.log('✅ Token stored:', data.access_token ? 'Yes' : 'No');
         
-        // Redirect based on role
-        if (data.role === 'admin' || data.role === 'staff') {
-          router.push('/dashboard');
-        } else {
-          router.push('/dashboard');
-        }
+        toast.success(`Bienvenue ${data.user.full_name || data.user.username}!`);
+        router.push('/dashboard');
       } else {
         toast.error(data.message || 'Erreur de connexion');
       }
-    } catch (error) {
-      toast.error('Erreur de connexion au serveur');
+    } catch (error: any) {
+      console.error('❌ Login error:', error);
+      toast.error(error?.message || 'Erreur de connexion au serveur');
     } finally {
       setLoading(false);
     }
@@ -76,14 +57,12 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-[#0a0a1a] flex items-center justify-center p-4">
       <div className="bg-gradient-to-br from-[#1a1a2e] to-[#0f0f23] rounded-2xl p-8 w-full max-w-md border border-[#2a2a4a]">
-        {/* Logo/Header */}
         <div className="text-center mb-8">
-          <div className="text-5xl mb-3">🏢</div>
+          <div className="text-5xl mb-3">🎮</div>
           <h1 className="text-2xl font-bold text-[#e94560]">Ninety Gaming House</h1>
-          <p className="text-gray-400 text-sm mt-1">Connectez-vous à votre espace</p>
+          <p className="text-gray-400 text-sm mt-1">Connectez-vous pour réserver</p>
         </div>
 
-        {/* Login Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-gray-400 text-sm font-medium mb-1">
@@ -137,7 +116,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Register Link */}
         <p className="text-center text-gray-400 text-sm mt-6">
           Pas encore de compte ?{' '}
           <Link href="/register" className="text-[#e94560] hover:underline">
@@ -145,11 +123,8 @@ export default function LoginPage() {
           </Link>
         </p>
 
-        {/* Demo Credentials */}
         <div className="mt-6 p-4 bg-[#0a0a1a] rounded-lg border border-[#1a1a2e]">
-          <p className="text-xs text-gray-500 text-center">
-            🔑 Compte de démonstration
-          </p>
+          <p className="text-xs text-gray-500 text-center">🔑 Compte de démonstration</p>
           <div className="flex justify-center gap-6 text-xs text-gray-400 mt-1">
             <span>👤 admin</span>
             <span>🔒 admin123</span>
