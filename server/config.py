@@ -20,4 +20,4 @@ class Config:
     
     # Server
     SERVER_PORT = int(os.getenv('SERVER_PORT', 8003))
-    DISCOVERY_PORT = int(os.getenv('DISCOVERY_PORT', 9000))s
+    DISCOVERY_PORT = int(os.getenv('DISCOVERY_PORT', 9000))

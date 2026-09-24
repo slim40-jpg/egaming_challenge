@@ -1,47 +1,19 @@
-// frontend/app/pc/[id]/page.tsx
+// app/pc/[id]/page.tsx
 
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
+import type { PC, Game } from '@/lib/types';
+import React from 'react';
 
-interface PC {
-  id: string;
-  mac_address: string;
-  hostname: string;
-  online: boolean;
-  in_session: boolean;
-  game: string;
-  session: any;
-  cpu: number;
-  ram: number;
-  gpu: number;
-  cpu_temp: number;
-  gpu_temp: number;
-  ip_address: string;
-  hardware: {
-    cpu: string;
-    gpu: string;
-    ram: string;
-  };
-  wallet_balance: number;
-  installed_games: any[];
-}
-
-interface Game {
-  name: string;
-  executable_path: string;
-  shortcut_path: string;
-  platform: string;
-  is_running: boolean;
-}
-
-export default function PCDetail() {
+export default function PCDetail({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
-  const params = useParams();
-  const pcId = params.id as string;
+  
+  // ✅ Déballer params avec React.use()
+  const { id: pcId } = React.use(params);
   
   const [pc, setPC] = useState<PC | null>(null);
   const [games, setGames] = useState<Game[]>([]);
@@ -56,33 +28,55 @@ export default function PCDetail() {
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const refreshInterval = useRef<NodeJS.Timeout | null>(null);
 
+  // app/pc/[id]/page.tsx - Modifier le useEffect
+
   useEffect(() => {
-    // Check auth
-    const token = localStorage.getItem('access_token');
-    if (!token) {
+    console.log('🔍 Params:', params);
+    console.log('🔍 PC ID:', pcId);
+  
+    if (!pcId || pcId === 'undefined') {
+       console.error('❌ Invalid PC ID');
+       toast.error('ID du PC invalide');
+       router.push('/dashboard');
+       return;
+    }
+
+    const localToken = localStorage.getItem('access_token');
+    const cloudToken = localStorage.getItem('cloud_access_token');
+  
+    if (!localToken && !cloudToken) {
+      console.log('❌ No token found, redirecting to login');
       router.push('/login');
       return;
     }
 
-    // Check role - only admin/staff can view PC details
-    const role = localStorage.getItem('role') || 'player';
-    if (role !== 'admin' && role !== 'staff') {
-      toast.error('Accès non autorisé. Cette page est réservée aux administrateurs.');
+  // ✅ VÉRIFIER LE USERNAME (admin OU cloud_username)
+    const user = localStorage.getItem('username') || 
+                   localStorage.getItem('cloud_user') || '';
+    const cloud_user_json = JSON.parse(localStorage.getItem('cloud_user') || '{}');
+    const isAdminUser = cloud_user_json.username === 'admin';
+    console.log('🔑 Username:', cloud_user_json.username);
+ 
+    if (!isAdminUser) {
+      console.log('❌ User is not admin:', cloud_user_json.username);
+      toast.error('Accès non autorisé. Cette page est réservée à l\'administrateur.');
       router.push('/dashboard');
       return;
     }
+  
     setIsAdmin(true);
+    console.log('✅ Admin access granted');
 
     fetchPCData();
     fetchGames();
     fetchWallet();
-    
+  
     refreshInterval.current = setInterval(() => {
       fetchPCData();
       fetchGamesSilently();
       fetchWallet();
     }, 5000);
-    
+  
     return () => {
       if (refreshInterval.current) clearInterval(refreshInterval.current);
       if (timerInterval.current) clearInterval(timerInterval.current);
@@ -90,9 +84,15 @@ export default function PCDetail() {
   }, [pcId]);
 
   const fetchPCData = async () => {
+    if (!pcId || pcId === 'undefined') {
+      console.error('❌ Cannot fetch PC data: invalid ID');
+      return;
+    }
+
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/pc/${pcId}`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/pc/${pcId}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -103,16 +103,21 @@ export default function PCDetail() {
         localStorage.removeItem('refresh_token');
         localStorage.removeItem('user');
         localStorage.removeItem('role');
-        document.cookie = 'access_token=; path=/; max-age=0';
-        document.cookie = 'role=; path=/; max-age=0';
+        localStorage.removeItem('username');
         router.push('/login');
         return;
       }
 
+      if (response.status === 404) {
+        toast.error('PC non trouvé');
+        router.push('/dashboard');
+        return;
+      }
+
       const data = await response.json();
+      console.log('✅ PC Data received:', data);
       setPC(data);
       
-      // Update session timer
       if (data.in_session && data.session) {
         const start = new Date(data.session.start_time);
         const now = new Date();
@@ -158,10 +163,16 @@ export default function PCDetail() {
   };
 
   const fetchGames = async () => {
+    if (!pcId || pcId === 'undefined') {
+      console.error('❌ Cannot fetch games: invalid ID');
+      return;
+    }
+
     setRefreshingGames(true);
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/pc/${pcId}/games`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/pc/${pcId}/games`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -169,20 +180,13 @@ export default function PCDetail() {
       const data = await response.json();
       
       if (data.status === 'ok') {
-        // Ensure each game has executable_path
         const gamesWithPaths = (data.games || []).map((game: any) => ({
           ...game,
           executable_path: game.executable_path || game.executable || '',
           shortcut_path: game.shortcut_path || game.shortcut || '',
         }));
         setGames(gamesWithPaths);
-        
-        // Debug: Log games with paths
-        console.log('🎮 Games loaded:', gamesWithPaths.map((g: any) => ({
-          name: g.name,
-          hasPath: !!g.executable_path,
-          path: g.executable_path
-        })));
+        console.log('🎮 Games loaded:', gamesWithPaths.length);
       }
     } catch (error) {
       console.error('Failed to fetch games:', error);
@@ -192,9 +196,12 @@ export default function PCDetail() {
   };
 
   const fetchGamesSilently = async () => {
+    if (!pcId || pcId === 'undefined') return;
+
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/pc/${pcId}/games`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/pc/${pcId}/games`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -217,7 +224,8 @@ export default function PCDetail() {
   const fetchWallet = async () => {
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/wallet`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/wallet`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -232,9 +240,15 @@ export default function PCDetail() {
   };
 
   const handleStartSession = async () => {
+    if (!pcId || pcId === 'undefined') {
+      toast.error('ID du PC invalide');
+      return;
+    }
+
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/session/start`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/session/start`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -260,11 +274,17 @@ export default function PCDetail() {
   };
 
   const handleEndSession = async () => {
+    if (!pcId || pcId === 'undefined') {
+      toast.error('ID du PC invalide');
+      return;
+    }
+
     if (!confirm('Terminer la session ?')) return;
     
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/session/end`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/session/end`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -291,12 +311,18 @@ export default function PCDetail() {
   };
 
   const handleCommand = async (command: string) => {
+    if (!pcId || pcId === 'undefined') {
+      toast.error('ID du PC invalide');
+      return;
+    }
+
     if (command === 'SHUTDOWN' && !confirm('⚠️ Éteindre ce PC ?')) return;
     if (command === 'RESTART' && !confirm('⚠️ Redémarrer ce PC ?')) return;
     
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/command`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/command`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -319,7 +345,8 @@ export default function PCDetail() {
   const handleTopup = async () => {
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/wallet/topup`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/wallet/topup`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -343,19 +370,14 @@ export default function PCDetail() {
   const handleLaunchGame = async (game: Game) => {
     console.log('🎮 Launching game:', game);
     
-    // Check if executable_path exists
-    const executablePath = game.executable_path || game.executable_path;
+    const executablePath = game.executable_path;
     
     if (!executablePath || executablePath === '' || executablePath === 'NO_PATH') {
-      console.error('❌ Missing executable path for game:', game);
       toast.error(`Chemin d'exécution manquant pour "${game.name}"`);
-      toast.error('💡 Recréez le raccourci sur le bureau ou installez le jeu');
       return;
     }
     
-    // Check if the path looks valid (contains .exe)
     if (!executablePath.toLowerCase().includes('.exe')) {
-      console.warn('⚠️ Executable path doesn\'t look like a valid EXE:', executablePath);
       if (!confirm(`Le chemin "${executablePath}" ne semble pas être un fichier exe. Continuer quand même ?`)) {
         return;
       }
@@ -365,7 +387,8 @@ export default function PCDetail() {
     
     try {
       const token = localStorage.getItem('access_token');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8003'}/api/games/launch-installed`, {
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/games/launch-installed`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -375,16 +398,14 @@ export default function PCDetail() {
           pc_id: pcId,
           game_name: game.name,
           executable: executablePath,
-          shortcut: game.shortcut_path || game.shortcut_path || '',
+          shortcut: game.shortcut_path || '',
         }),
       });
       
       const data = await response.json();
-      console.log('📡 Response:', data);
       
       if (data.status === 'ok') {
         toast.success(`Lancement de ${game.name}`);
-        // Refresh games after a few seconds to update running status
         setTimeout(fetchGames, 3000);
       } else {
         toast.error(data.message || 'Erreur lors du lancement');
@@ -397,8 +418,6 @@ export default function PCDetail() {
 
   const getGameIcon = (gameName: string) => {
     const nameLower = gameName.toLowerCase();
-    
-    // FPS Games
     if (nameLower.includes('counter-strike') || nameLower.includes('csgo') || nameLower.includes('cs2')) return '🎯';
     if (nameLower.includes('valorant')) return '🔫';
     if (nameLower.includes('fortnite')) return '🎮';
@@ -407,44 +426,16 @@ export default function PCDetail() {
     if (nameLower.includes('overwatch')) return '🎯';
     if (nameLower.includes('apex')) return '🔫';
     if (nameLower.includes('destiny')) return '🌟';
-    
-    // MOBA Games
     if (nameLower.includes('league of legends') || nameLower.includes('lol')) return '🏆';
     if (nameLower.includes('dota')) return '⚔️';
-    
-    // Sports Games
     if (nameLower.includes('fifa')) return '⚽';
-    if (nameLower.includes('pes')) return '⚽';
-    if (nameLower.includes('nba')) return '🏀';
     if (nameLower.includes('rocket league')) return '🚗';
-    if (nameLower.includes('forza')) return '🚗';
-    if (nameLower.includes('need for speed') || nameLower.includes('nfs')) return '🏎️';
-    
-    // Action/Adventure
     if (nameLower.includes('gta') || nameLower.includes('grand theft auto')) return '🚗';
-    if (nameLower.includes('assassin')) return '🗡️';
-    if (nameLower.includes('cyberpunk')) return '🤖';
-    if (nameLower.includes('witcher')) return '🐺';
-    if (nameLower.includes('elden ring') || nameLower.includes('dark souls')) return '⚔️';
-    if (nameLower.includes('resident evil')) return '🧟';
-    
-    // Fighting Games
-    if (nameLower.includes('mortal kombat')) return '💀';
-    if (nameLower.includes('street fighter')) return '👊';
-    if (nameLower.includes('tekken')) return '👊';
     if (nameLower.includes('dragon ball') || nameLower.includes('dbz')) return '🐉';
     if (nameLower.includes('naruto')) return '🍥';
     if (nameLower.includes('mugen')) return '👊';
-    
-    // Indie Games
+    if (nameLower.includes('unity')) return '🎮';
     if (nameLower.includes('minecraft')) return '⛏️';
-    if (nameLower.includes('terraria')) return '🌿';
-    if (nameLower.includes('stardew')) return '🌾';
-    if (nameLower.includes('undertale')) return '💛';
-    if (nameLower.includes('cuphead')) return '☕';
-    if (nameLower.includes('hollow knight')) return '🪲';
-    if (nameLower.includes('hades')) return '🔥';
-    
     return '🎮';
   };
 
@@ -463,7 +454,6 @@ export default function PCDetail() {
   const isInSession = pc.in_session;
   const gameName = pc.game && pc.game !== 'none' ? pc.game : 'Aucun jeu';
 
-  // Count games with valid paths
   const gamesWithPaths = games.filter(g => g.executable_path && g.executable_path !== '');
   const gamesWithoutPaths = games.filter(g => !g.executable_path || g.executable_path === '');
 
@@ -474,10 +464,7 @@ export default function PCDetail() {
         <div className="bg-gradient-to-r from-[#1a1a2e] to-[#16213e] rounded-2xl p-6 mb-6 border border-[#2a2a4a]">
           <div className="flex flex-wrap justify-between items-center">
             <div className="flex items-center gap-4">
-              <Link
-                href="/dashboard"
-                className="p-2 hover:bg-[#2a2a4a] rounded-lg transition"
-              >
+              <Link href="/dashboard" className="p-2 hover:bg-[#2a2a4a] rounded-lg transition">
                 ← Retour
               </Link>
               <div>
@@ -489,6 +476,9 @@ export default function PCDetail() {
                     ● {isOnline ? 'En ligne' : 'Hors ligne'}
                   </span>
                   {isInSession && <span className="text-yellow-400">🟡 En session</span>}
+                  <span className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full text-xs">
+                    🔐 ADMIN
+                  </span>
                 </div>
               </div>
             </div>
@@ -496,9 +486,6 @@ export default function PCDetail() {
               <div>
                 <span className="text-gray-500">Jeux: </span>
                 <span className="text-white font-bold">{games.length}</span>
-                <span className="text-gray-500 text-xs ml-1">
-                  ({gamesWithPaths.length} avec chemin)
-                </span>
               </div>
               <div>
                 <span className="text-gray-500">Wallet: </span>
@@ -579,33 +566,19 @@ export default function PCDetail() {
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-semibold text-[#e94560]">🎮 Jeux installés</h2>
-                <div className="flex gap-2">
-                  <button
-                    onClick={fetchGames}
-                    disabled={refreshingGames}
-                    className="p-2 hover:bg-[#2a2a4a] rounded-lg transition disabled:opacity-50"
-                  >
-                    {refreshingGames ? '⏳' : '🔄'}
-                  </button>
-                </div>
+                <button
+                  onClick={fetchGames}
+                  disabled={refreshingGames}
+                  className="p-2 hover:bg-[#2a2a4a] rounded-lg transition disabled:opacity-50"
+                >
+                  {refreshingGames ? '⏳' : '🔄'}
+                </button>
               </div>
               
-              {/* Stats */}
-              <div className="flex gap-4 mb-4 text-xs text-gray-500">
-                <span>Total: <span className="text-white font-bold">{games.length}</span></span>
-                <span>✅ Avec chemin: <span className="text-green-400 font-bold">{gamesWithPaths.length}</span></span>
-                {gamesWithoutPaths.length > 0 && (
-                  <span>⚠️ Sans chemin: <span className="text-red-400 font-bold">{gamesWithoutPaths.length}</span></span>
-                )}
-              </div>
-
               {games.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <div className="text-4xl mb-2">🎮</div>
                   <p>Aucun jeu détecté</p>
-                  <p className="text-xs mt-2 text-gray-600">
-                    Assurez-vous que l'agent a analysé les raccourcis du bureau
-                  </p>
                   <button
                     onClick={fetchGames}
                     className="mt-4 px-4 py-2 bg-[#e94560] text-white rounded-lg hover:bg-[#c73652] transition"
@@ -622,38 +595,18 @@ export default function PCDetail() {
                     return (
                       <div
                         key={index}
-                        onClick={() => hasPath ? handleLaunchGame(game) : toast.error('Chemin d\'exécution manquant pour ce jeu')}
+                        onClick={() => hasPath ? handleLaunchGame(game) : toast.error('Chemin d\'exécution manquant')}
                         className={`bg-[#0f0f23] rounded-xl p-4 text-center transition-all hover:transform hover:-translate-y-1 border-2 ${
                           game.is_running ? 'border-green-500' : 
                           hasPath ? 'border-[#2a2a4a] hover:border-[#e94560] cursor-pointer' : 
                           'border-red-500/50 opacity-60 cursor-not-allowed'
                         }`}
                       >
-                        <div className="relative">
-                          {game.is_running && (
-                            <span className="absolute -top-2 -right-2 bg-green-500 text-black text-xs font-bold px-2 py-0.5 rounded-full">
-                              EN COURS
-                            </span>
-                          )}
-                          {!hasPath && !game.is_running && (
-                            <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full" title="Chemin d'exécution manquant">
-                              ⚠️
-                            </span>
-                          )}
-                          <div className="text-3xl mb-1">{icon}</div>
-                          <div className="text-sm font-semibold text-white truncate" title={game.name}>
-                            {game.name}
-                          </div>
-                          <div className="text-xs text-gray-500">{game.platform || 'standalone'}</div>
-                          {!hasPath && !game.is_running && (
-                            <div className="text-xs text-red-400 mt-1">Chemin manquant</div>
-                          )}
-                          {hasPath && (
-                            <div className="text-[8px] text-gray-600 mt-1 truncate" title={game.executable_path}>
-                              {game.executable_path.split('\\').pop()}
-                            </div>
-                          )}
+                        <div className="text-3xl mb-1">{icon}</div>
+                        <div className="text-sm font-semibold text-white truncate" title={game.name}>
+                          {game.name}
                         </div>
+                        <div className="text-xs text-gray-500">{game.platform || 'standalone'}</div>
                       </div>
                     );
                   })}
@@ -754,7 +707,7 @@ export default function PCDetail() {
 
             {/* Remote Controls */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
-              <h2 className="text-lg font-semibold text-[#e94560] mb-4">🔧 Contrôles</h2>
+              <h2 className="text-lg font-semibold text-[#e94560] mb-4">🔧 Contrôles Admin</h2>
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => handleCommand('LOCK')}
@@ -775,31 +728,6 @@ export default function PCDetail() {
                   ⏻ Éteindre
                 </button>
               </div>
-            </div>
-
-            {/* Debug Info */}
-            <div className="bg-[#1a1a2e] rounded-xl p-4 border border-[#2a2a4a]">
-              <details className="text-xs">
-                <summary className="text-gray-500 cursor-pointer hover:text-gray-300">
-                  🔧 Debug Info
-                </summary>
-                <div className="mt-2 space-y-1 text-gray-400">
-                  <div>PC ID: <span className="text-white">{pcId}</span></div>
-                  <div>Games loaded: <span className="text-white">{games.length}</span></div>
-                  <div>Games with paths: <span className="text-green-400">{gamesWithPaths.length}</span></div>
-                  <div>Games without paths: <span className="text-red-400">{gamesWithoutPaths.length}</span></div>
-                  <div className="mt-1">
-                    {games.map((g, i) => (
-                      <div key={i} className="flex items-center gap-2">
-                        <span>{g.name}</span>
-                        <span className={g.executable_path ? 'text-green-400' : 'text-red-400'}>
-                          {g.executable_path ? '✅' : '❌'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </details>
             </div>
           </div>
         </div>

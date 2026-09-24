@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { cloudRegister } from '@/lib/api';
+import { cloud } from '@/lib/api';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -16,7 +16,7 @@ export default function RegisterPage() {
     password: '',
     confirmPassword: '',
     full_name: '',
-    phone: ''
+    phone: '',
   });
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -30,7 +30,7 @@ export default function RegisterPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     const { username, email, password, confirmPassword, full_name, phone } = formData;
 
     if (!username || !email || !password || !confirmPassword) {
@@ -51,22 +51,43 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      const data = await cloudRegister({
+      const res = await cloud.register({
         username,
         email,
         password,
         full_name: full_name || username,
-        phone
+        phone,
       });
 
-      if (data.status === 'ok') {
+      const body = res.data;
+
+      if (body?.access_token) {
+        // Auto-login: store token + user, then go to dashboard
+        localStorage.setItem('access_token', body.access_token);
+        localStorage.setItem('cloud_access_token', body.access_token);
+        if (body.user) {
+          localStorage.setItem('cloud_user', JSON.stringify(body.user));
+          localStorage.setItem('username', body.user.username);
+          localStorage.setItem('role', body.user.role);
+        }
+        toast.success('Compte créé — connexion réussie');
+        router.replace('/dashboard');
+      } else if (body?.status === 'ok') {
         toast.success('Inscription réussie ! Connectez-vous maintenant');
         router.push('/login');
       } else {
-        toast.error(data.message || 'Erreur lors de l\'inscription');
+        toast.error(body?.error || body?.message || "Erreur lors de l'inscription");
       }
-    } catch (error) {
-      toast.error('Erreur de connexion au serveur');
+    } catch (error: any) {
+      console.error('Register error:', {
+        status: error?.response?.status,
+        body: error?.response?.data,
+      });
+      const msg =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        'Erreur de connexion au serveur';
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -191,7 +212,7 @@ export default function RegisterPage() {
                 Inscription...
               </span>
             ) : (
-              'S\'inscrire'
+              "S'inscrire"
             )}
           </button>
         </form>

@@ -6,7 +6,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
-import { cloudLogin } from '@/lib/api';
+import { cloud } from '@/lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -16,16 +16,16 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem('cloud_access_token');
+    const token = localStorage.getItem('cloud_access_token')
+                || localStorage.getItem('access_token');
     if (token) {
-      console.log('✅ Already logged in, redirecting to dashboard');
-      router.push('/dashboard');
+      router.replace('/dashboard');
     }
   }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!username || !password) {
       toast.error('Veuillez remplir tous les champs');
       return;
@@ -34,21 +34,34 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      console.log('🔐 Logging in with:', username);
-      const data = await cloudLogin(username, password);
+      console.log('🔐 Logging in to CLOUD server with:', username);
 
-      if (data.status === 'ok') {
-        console.log('✅ Login successful');
-        console.log('✅ Token stored:', data.access_token ? 'Yes' : 'No');
-        
-        toast.success(`Bienvenue ${data.user.full_name || data.user.username}!`);
-        router.push('/dashboard');
+      // ✅ Axios returns { data, status, headers, ... }
+      const res = await cloud.login(username, password);
+      const body = res.data;
+
+      console.log('📥 Login response:', body);
+
+      if (body?.access_token) {
+        // ✅ Persist token + user so the rest of the app can find them
+        localStorage.setItem('access_token', body.access_token);
+        localStorage.setItem('cloud_access_token', body.access_token);
+        localStorage.setItem('cloud_user', JSON.stringify(body.user));
+        localStorage.setItem('username', body.user.username);
+        localStorage.setItem('role', body.user.role);
+
+        toast.success(`Bienvenue ${body.user.username}!`);
+        router.replace('/dashboard');
       } else {
-        toast.error(data.message || 'Erreur de connexion');
+        toast.error(body?.error || 'Réponse invalide du serveur');
       }
     } catch (error: any) {
       console.error('❌ Login error:', error);
-      toast.error(error?.message || 'Erreur de connexion au serveur');
+      const msg =
+        error?.response?.data?.error ||
+        error?.message ||
+        'Erreur de connexion au serveur cloud';
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -61,6 +74,9 @@ export default function LoginPage() {
           <div className="text-5xl mb-3">🎮</div>
           <h1 className="text-2xl font-bold text-[#e94560]">Ninety Gaming House</h1>
           <p className="text-gray-400 text-sm mt-1">Connectez-vous pour réserver</p>
+          <span className="inline-block mt-2 text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full">
+            ☁️ Cloud
+          </span>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -124,8 +140,8 @@ export default function LoginPage() {
         </p>
 
         <div className="mt-6 p-4 bg-[#0a0a1a] rounded-lg border border-[#1a1a2e]">
-          <p className="text-xs text-gray-500 text-center">🔑 Compte de démonstration</p>
-          <div className="flex justify-center gap-6 text-xs text-gray-400 mt-1">
+          <p className="text-xs text-gray-500 text-center">🔑 Comptes de démonstration</p>
+          <div className="flex justify-center gap-4 text-xs text-gray-400 mt-1">
             <span>👤 admin</span>
             <span>🔒 admin123</span>
           </div>
