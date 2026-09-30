@@ -400,18 +400,22 @@ DISCOVERY_INTERVAL = 3   # seconds
 
 
 def _detect_lan_ip() -> str:
-    """Best-effort: find this machine's LAN IP without sending traffic."""
+    """Detect the LAN IP provided by the host, with Docker fallback."""
+
+    # Docker/host startup script provides the real LAN IP
+    lan_ip = os.getenv("LAN_IP")
+    if lan_ip:
+        return lan_ip
+
+    # Fallback for running server outside Docker
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Doesn't actually connect; just asks the OS which interface would be used
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
     except Exception:
-        ip = '127.0.0.1'
+        return "127.0.0.1"
     finally:
         s.close()
-    return ip
-
 
 DISCOVERY_PORT = 9000
 DISCOVERY_INTERVAL = 2   # seconds — agent waits up to 10s on startup, be generous
