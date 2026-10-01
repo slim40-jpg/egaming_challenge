@@ -71,4 +71,4 @@ htmlcov/
 # =========================
 *.zip
 *.tar
-*.tar.gz
+*.tar.gz.env
