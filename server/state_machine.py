@@ -11,7 +11,7 @@ def compute_state(pc: PC) -> str:
         return 'offline'
 
     # Active session?
-    active = Session.query.filter_by(pc_id=pc.pc_id, active=True).first()
+    active = Session.query.filter(Session.pc_id == pc.pc_id, Session.status == 'active').first()
     if active:
         return 'in_session'
 
