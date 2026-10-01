@@ -6,11 +6,42 @@ db = SQLAlchemy()
 
 class User(db.Model):
     __tablename__ = 'users'
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255))
-    role = db.Column(db.String(20), default='player')
 
+    id = db.Column(db.String(36), primary_key=True)
+
+    username = db.Column(
+        db.String(80),
+        unique=True,
+        nullable=False
+    )
+
+    email = db.Column(
+        db.String(120),
+        unique=True,
+        nullable=False
+    )
+
+    password_hash = db.Column(
+        db.String(200),
+        nullable=False
+    )
+
+    role = db.Column(
+        db.String(20),
+        nullable=False
+    )
+
+    full_name = db.Column(db.String(100))
+
+    phone = db.Column(db.String(20))
+
+    created_at = db.Column(db.DateTime)
+
+    updated_at = db.Column(db.DateTime)
+
+    last_login = db.Column(db.DateTime)
+
+    is_active = db.Column(db.Boolean)
 
 class PC(db.Model):
     __tablename__ = 'pcs'
@@ -65,29 +96,77 @@ class PC(db.Model):
     def ram_total(self):
         return self.ram_size
 
-
 class Session(db.Model):
     __tablename__ = 'sessions'
-    id = db.Column(db.Integer, primary_key=True)
-    pc_id = db.Column(db.String(36), db.ForeignKey('pcs.id'), nullable=False)
-    user_name = db.Column(db.String(100))
-    start_time = db.Column(db.DateTime, default=datetime.utcnow)
-    end_time = db.Column(db.DateTime)
-    price_per_minute = db.Column(db.Float, default=0.10)
-    cost = db.Column(db.Float, default=0.0)
-    active = db.Column(db.Boolean, default=True)
 
+    id = db.Column(db.String(36), primary_key=True)
+    pc_id = db.Column(
+        db.String(36),
+        db.ForeignKey('pcs.id'),
+        nullable=False
+    )
+    user_id = db.Column(
+        db.String(36),
+        db.ForeignKey('users.id'),
+        nullable=False
+    )
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime)
+    duration_minutes = db.Column(db.Float)
+    cost = db.Column(db.Float, default=0.0)
+    price_per_minute = db.Column(db.Float, default=0.10)
+    game = db.Column(db.String(100))
+    session_type = db.Column(db.String(20))
+    status = db.Column(db.String(20))
+    created_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    user = db.relationship('User', backref='sessions')
 
 class Reservation(db.Model):
     __tablename__ = 'reservations'
-    id = db.Column(db.Integer, primary_key=True)
-    pc_id = db.Column(db.String(36), db.ForeignKey('pcs.id'), nullable=False)
-    user_name = db.Column(db.String(100))
-    start_time = db.Column(db.DateTime, nullable=False)
-    end_time = db.Column(db.DateTime, nullable=False)
-    status = db.Column(db.String(20), default='accepted')
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    id = db.Column(db.String(36), primary_key=True)
+
+    pc_id = db.Column(
+        db.String(36),
+        db.ForeignKey('pcs.id'),
+        nullable=False
+    )
+
+    user_id = db.Column(
+        db.String(36),
+        db.ForeignKey('users.id'),
+        nullable=False
+    )
+
+    start_time = db.Column(
+        db.DateTime,
+        nullable=False
+    )
+
+    end_time = db.Column(
+        db.DateTime,
+        nullable=False
+    )
+
+    status = db.Column(
+        db.String(20)
+    )
+
+    user_name = db.Column(
+        db.String(100)
+    )
+
+    notes = db.Column(
+        db.Text
+    )
+
+    created_at = db.Column(
+        db.DateTime
+    )
 
 class SyncState(db.Model):
     __tablename__ = 'sync_state'
@@ -97,10 +176,18 @@ class SyncState(db.Model):
 
 class Wallet(db.Model):
     __tablename__ = 'wallets'
-    id = db.Column(db.Integer, primary_key=True)
-    user_name = db.Column(db.String(100), unique=True)
-    balance = db.Column(db.Float, default=0.0)
 
+    id = db.Column(db.String(36), primary_key=True)
+    user_id = db.Column(
+        db.String(36),
+        db.ForeignKey('users.id'),
+        nullable=False
+    )
+    balance = db.Column(db.Float, default=0.0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship('User', backref='wallet', uselist=False)
 
 class Command(db.Model):
     __tablename__ = 'commands'

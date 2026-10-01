@@ -33,19 +33,15 @@ services:
     restart: unless-stopped
     ports:
       - "5000:5000"
+    env_file:
+      - ./cloud_server/.env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/cloud_db
-      - LOCAL_SERVER_URL=http://host.docker.internal:8003
-      - CENTER_ID=main
-      - ENV=production
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/cloud_db
     depends_on:
       db:
         condition: service_healthy
     networks:
       - gaming-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
   # Local Server (Gaming Center)
   local:
     build:
@@ -56,12 +52,12 @@ services:
     ports:
       - "8003:8003"
       - "9000:9000/udp"
+    env_file:
+      - ./server/.env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/gaming_house
-      - CLOUD_API_URL=http://cloud:5000
-      - CENTER_ID=main
-      - SYNC_INTERVAL=10
-      - JWT_SECRET_KEY=your-super-secret-key
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/gaming_house
+      CLOUD_API_URL: http://cloud:5000
+      LAN_IP: ${LAN_IP}
     depends_on:
       db:
         condition: service_healthy
@@ -71,7 +67,6 @@ services:
       - gaming-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
   # Frontend
   frontend:
     build:

@@ -7,6 +7,7 @@ import socket
 import threading
 from datetime import datetime
 from functools import wraps
+import uuid
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -215,7 +216,10 @@ def pc_detail(pc_id):
     if not pc:
         return jsonify({'error': 'not found'}), 404
 
-    active = Session.query.filter_by(pc_id=pc_id, active=True).first()
+    active = Session.query.filter(
+      Session.pc_id == pc_id,
+      Session.status == 'active'
+    ).first()
     session_data = None
     if active:
         session_data = {
@@ -304,7 +308,10 @@ def start_session():
     if not pc_id:
         return jsonify({'error': 'pc_id required'}), 400
 
-    existing = Session.query.filter_by(pc_id=pc_id, active=True).first()
+    existing = Session.query.filter(
+        Session.pc_id == pc_id,
+        Session.status == 'active'
+    ).first()
     if existing:
         return jsonify({'status': 'error', 'message': 'session already active'}), 409
 
@@ -319,7 +326,10 @@ def start_session():
 def end_session():
     data = request.get_json() or {}
     pc_id = data.get('pc_id')
-    s = Session.query.filter_by(pc_id=pc_id, active=True).first()
+    s = Session.query.filter(
+        Session.pc_id == pc_id,
+        Session.status == 'active'
+    ).first()
     if not s:
         return jsonify({'status': 'error', 'message': 'no active session'}), 404
 
@@ -340,21 +350,42 @@ def end_session():
 # ─────────────────────────────────────────────────────────────
 
 def _wallet_for(username):
-    w = Wallet.query.filter_by(user_name=username).first()
+    user = User.query.filter_by(username=username).first()
+
+    if not user:
+        return None
+
+    w = Wallet.query.filter_by(user_id=user.id).first()
+
     if not w:
-        w = Wallet(user_name=username, balance=0.0)
+        w = Wallet(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            balance=0.0
+        )
         db.session.add(w)
         db.session.commit()
-    return w
 
+    return w
 
 @app.route('/api/wallet', methods=['GET'])
 @jwt_required()
 def get_wallet():
     username = get_jwt().get('username', 'unknown')
     w = _wallet_for(username)
-    return jsonify({'status': 'ok', 'wallet': {'balance': w.balance}})
 
+    if not w:
+        return jsonify({
+            'status': 'error',
+            'message': 'User not found'
+        }), 404
+
+    return jsonify({
+        'status': 'ok',
+        'wallet': {
+            'balance': w.balance
+        }
+    })
 
 @app.route('/api/wallet/topup', methods=['POST'])
 @jwt_required()
@@ -419,19 +450,6 @@ def _detect_lan_ip() -> str:
 
 DISCOVERY_PORT = 9000
 DISCOVERY_INTERVAL = 2   # seconds — agent waits up to 10s on startup, be generous
-
-
-def _detect_lan_ip() -> str:
-    """Best-effort LAN IP (no real traffic)."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
 
 
 def _broadcast_presence():

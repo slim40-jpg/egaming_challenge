@@ -42,28 +42,79 @@ class PCMirror(db.Model):
 
 class Reservation(db.Model):
     __tablename__ = 'reservations'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    center_id = db.Column(db.String(50), nullable=False, default='main')
-    pc_id = db.Column(db.String(100), nullable=False)
-    start_time = db.Column(db.DateTime, nullable=False)
-    end_time = db.Column(db.DateTime, nullable=False)
-    status = db.Column(db.String(20), default='accepted')  # accepted|cancelled|completed
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    user = db.relationship('User', backref='reservations')
+    id = db.Column(
+        db.String(36),
+        primary_key=True
+    )
+
+    pc_id = db.Column(
+        db.String(50),
+        nullable=False
+    )
+
+    center_id = db.Column(
+        db.String(50),
+        nullable=False,
+        default='main'
+    )
+
+    user_name = db.Column(
+        db.String(100),
+        nullable=False
+    )
+
+    user_email = db.Column(
+        db.String(100),
+        nullable=False
+    )
+
+    user_phone = db.Column(
+        db.String(20)
+    )
+
+    start_time = db.Column(
+        db.DateTime,
+        nullable=False
+    )
+
+    end_time = db.Column(
+        db.DateTime,
+        nullable=False
+    )
+
+    status = db.Column(
+        db.String(20),
+        default='accepted'
+    )
+
+    synced = db.Column(
+        db.Boolean,
+        default=False
+    )
+
+    synced_at = db.Column(
+        db.DateTime
+    )
+
+    created_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
 
     def to_dict(self):
         return {
             'id': self.id,
-            'user_id': self.user_id,
-            'username': self.user.username if self.user else None,
-            'center_id': self.center_id,
             'pc_id': self.pc_id,
+            'center_id': self.center_id,
+            'user_name': self.user_name,
+            'user_email': self.user_email,
+            'user_phone': self.user_phone,
             'start_time': self.start_time.isoformat(),
             'end_time': self.end_time.isoformat(),
             'status': self.status,
+            'synced': self.synced,
+            'synced_at': self.synced_at.isoformat() if self.synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
+    
