@@ -8,7 +8,7 @@
 // ============================================================
 // HEADER FILES
 // ============================================================
-
+#include "device_monitor.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -86,7 +86,7 @@ std::string GetModuleName(const MODULEENTRY32 &me32)
 }
 
 // ============================================================
-// GAME DETECTOR CLASS
+// GAME DETECTOR CLASS  (unchanged)
 // ============================================================
 
 class GameDetector
@@ -273,19 +273,11 @@ public:
         std::string exeName = (lastSlash != std::string::npos) ? fullPath.substr(lastSlash + 1) : fullPath;
 
         if (IsExeRegisteredAsGame(exeName))
-        {
             return true;
-        }
-
         if (IsProcessAGame(processID))
-        {
             return true;
-        }
-
         if (IsProcessProbablyGame(exeName))
-        {
             return true;
-        }
 
         return false;
     }
@@ -427,9 +419,7 @@ std::string GetMACAddress()
 
     pAdapterInfo = (IP_ADAPTER_INFO *)malloc(sizeof(IP_ADAPTER_INFO));
     if (pAdapterInfo == NULL)
-    {
         return "00-00-00-00-00-00";
-    }
 
     DWORD dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen);
     if (dwRetVal == ERROR_BUFFER_OVERFLOW)
@@ -437,9 +427,7 @@ std::string GetMACAddress()
         free(pAdapterInfo);
         pAdapterInfo = (IP_ADAPTER_INFO *)malloc(ulOutBufLen);
         if (pAdapterInfo == NULL)
-        {
             return "00-00-00-00-00-00";
-        }
         dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen);
     }
 
@@ -493,7 +481,6 @@ std::string GetCPUName()
         {
             RegCloseKey(hKey);
             std::string result(cpuName);
-            // Trim trailing spaces
             while (!result.empty() && result.back() == ' ')
                 result.pop_back();
             return result;
@@ -519,7 +506,6 @@ std::string GetGPUName()
             {
                 RegCloseKey(hKey);
                 std::string result(gpuName);
-                // Trim trailing spaces
                 while (!result.empty() && result.back() == ' ')
                     result.pop_back();
                 return result;
@@ -557,9 +543,7 @@ std::string GetLocalIP()
 {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
         return "127.0.0.1";
-    }
 
     char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) != 0)
@@ -628,17 +612,15 @@ void LogMessage(const std::string &message)
 }
 
 // ============================================================
-// CPU TEMPERATURE (WMI)
+// CPU TEMPERATURE
 // ============================================================
 
 int GetCPUTemperature()
 {
-    // Try to get CPU temperature via registry
     HKEY hKey;
     DWORD temp = 0;
     DWORD size = sizeof(temp);
 
-    // Common location for CPU temperature
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                       "HARDWARE\\ACPI\\ThermalZone\\TZ0\\_TMP",
                       0, KEY_READ, &hKey) == ERROR_SUCCESS)
@@ -646,13 +628,11 @@ int GetCPUTemperature()
         if (RegQueryValueExA(hKey, "Temperature", NULL, NULL, (LPBYTE)&temp, &size) == ERROR_SUCCESS)
         {
             RegCloseKey(hKey);
-            // Temperature is stored in tenths of kelvin
-            return (int)((temp / 10.0) - 273.15); // Convert to Celsius
+            return (int)((temp / 10.0) - 273.15);
         }
         RegCloseKey(hKey);
     }
 
-    // Alternative location
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                       "HARDWARE\\ACPI\\ThermalZone\\TZ00\\_TMP",
                       0, KEY_READ, &hKey) == ERROR_SUCCESS)
@@ -669,7 +649,7 @@ int GetCPUTemperature()
 }
 
 // ============================================================
-// HARDWARE MONITORING (System-wide)
+// HARDWARE MONITORING
 // ============================================================
 
 int GetCPUUsage()
@@ -680,11 +660,8 @@ int GetCPUUsage()
     static bool firstCall = true;
 
     FILETIME idleTime, kernelTime, userTime;
-
     if (!GetSystemTimes(&idleTime, &kernelTime, &userTime))
-    {
         return 0;
-    }
 
     auto FileTimeToULongLong = [](const FILETIME &ft) -> unsigned long long
     {
@@ -703,7 +680,6 @@ int GetCPUUsage()
     unsigned long long idleDiff = FileTimeToULongLong(idleTime) - FileTimeToULongLong(prevIdle);
     unsigned long long kernelDiff = FileTimeToULongLong(kernelTime) - FileTimeToULongLong(prevKernel);
     unsigned long long userDiff = FileTimeToULongLong(userTime) - FileTimeToULongLong(prevUser);
-
     unsigned long long totalDiff = kernelDiff + userDiff;
 
     prevIdle = idleTime;
@@ -712,21 +688,15 @@ int GetCPUUsage()
 
     if (totalDiff == 0)
         return 0;
-
-    int cpuUsage = 100 - (int)((idleDiff * 100) / totalDiff);
-    return cpuUsage;
+    return 100 - (int)((idleDiff * 100) / totalDiff);
 }
 
 int GetRAMUsage()
 {
     MEMORYSTATUSEX memStatus;
     memStatus.dwLength = sizeof(MEMORYSTATUSEX);
-
     if (!GlobalMemoryStatusEx(&memStatus))
-    {
         return 0;
-    }
-
     return (int)memStatus.dwMemoryLoad;
 }
 
@@ -736,16 +706,12 @@ int GetRAMUsage()
 
 int GetGPUUsageViaDXGI()
 {
-    // Try to get GPU usage via DXGI - using the correct function
     IDXGIFactory1 *pFactory = nullptr;
     IDXGIAdapter1 *pAdapter = nullptr;
 
-    // Use CreateDXGIFactory1 instead of CreateDXGIFactory
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void **)&pFactory);
     if (FAILED(hr) || pFactory == nullptr)
-    {
         return 0;
-    }
 
     hr = pFactory->EnumAdapters1(0, &pAdapter);
     if (FAILED(hr) || pAdapter == nullptr)
@@ -754,11 +720,9 @@ int GetGPUUsageViaDXGI()
         return 0;
     }
 
-    // Get adapter description
     DXGI_ADAPTER_DESC1 desc;
     pAdapter->GetDesc1(&desc);
 
-    // Check if this is a real GPU (not software or basic display)
     std::string gpuName = WCharToString(desc.Description);
     bool isRealGPU = (gpuName.find("Microsoft") == std::string::npos &&
                       gpuName.find("Basic") == std::string::npos &&
@@ -769,18 +733,13 @@ int GetGPUUsageViaDXGI()
     pFactory->Release();
 
     if (!isRealGPU)
-    {
         return 0;
-    }
 
-    // If we have a real GPU, estimate usage based on system activity
-    // and whether a game is running
     std::string currentGame = g_GameDetector.GetCurrentGameName();
     int cpuUsage = GetCPUUsage();
 
     if (currentGame != "none")
     {
-        // Game is running - GPU is likely active
         if (cpuUsage > 70)
             return 85 + (cpuUsage - 70) / 6;
         else if (cpuUsage > 50)
@@ -790,7 +749,6 @@ int GetGPUUsageViaDXGI()
     }
     else
     {
-        // No game - GPU is likely idle
         if (cpuUsage > 60)
             return 20 + (cpuUsage - 60) / 4;
         else
@@ -807,25 +765,20 @@ int GetGPUUsageViaPDH()
     if (firstRun)
     {
         firstRun = false;
-
         if (PdhOpenQueryA(NULL, 0, &query) == ERROR_SUCCESS)
         {
-            // Try different GPU counter paths
             const char *counterPaths[] = {
                 "\\GPU Process Memory\\Usage",
                 "\\GPU Engine\\Utilization Percentage",
                 "\\GPU 0\\Utilization Percentage",
                 "\\GPU 0\\Engine Utilization",
                 "\\GPU 1\\Utilization Percentage"};
-
             for (int i = 0; i < 5 && counter == NULL; i++)
             {
                 PdhAddCounterA(query, counterPaths[i], 0, &counter);
                 if (counter != NULL)
                     break;
             }
-
-            // If we got a counter, collect initial data
             if (counter != NULL)
             {
                 PdhCollectQueryData(query);
@@ -836,27 +789,20 @@ int GetGPUUsageViaPDH()
     }
 
     if (query == NULL || counter == NULL)
-    {
         return 0;
-    }
 
     PdhCollectQueryData(query);
-
     PDH_FMT_COUNTERVALUE counterVal;
     if (PdhGetFormattedCounterValue(counter, PDH_FMT_LONG, NULL, &counterVal) == ERROR_SUCCESS)
     {
         if (counterVal.CStatus == PDH_CSTATUS_VALID_DATA)
-        {
             return (int)counterVal.longValue;
-        }
     }
-
     return 0;
 }
 
 int GetGPUUsageViaNVIDIA()
 {
-    // Try NVIDIA-specific registry
     HKEY hKey;
     DWORD usage = 0;
     DWORD size = sizeof(usage);
@@ -865,7 +811,6 @@ int GetGPUUsageViaNVIDIA()
     {
         char subkey[256];
         sprintf_s(subkey, "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\%04d", i);
-
         if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, subkey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
         {
             char driverDesc[256];
@@ -878,7 +823,6 @@ int GetGPUUsageViaNVIDIA()
                     desc.find("Radeon") != std::string::npos ||
                     desc.find("Intel") != std::string::npos)
                 {
-                    // Try to read GPU usage from performance registry
                     if (RegQueryValueExA(hKey, "Performance", NULL, NULL, (LPBYTE)&usage, &size) == ERROR_SUCCESS)
                     {
                         RegCloseKey(hKey);
@@ -890,7 +834,6 @@ int GetGPUUsageViaNVIDIA()
             RegCloseKey(hKey);
         }
     }
-
     return 0;
 }
 
@@ -898,34 +841,23 @@ int GetGPUUsage()
 {
     int usage = 0;
 
-    // Try PDH counters first (most accurate)
     usage = GetGPUUsageViaPDH();
     if (usage > 0 && usage <= 100)
-    {
         return usage;
-    }
 
-    // Try NVIDIA/AMD specific
     usage = GetGPUUsageViaNVIDIA();
     if (usage > 0 && usage <= 100)
-    {
         return usage;
-    }
 
-    // Try DXGI as fallback
     usage = GetGPUUsageViaDXGI();
     if (usage > 0 && usage <= 100)
-    {
         return usage;
-    }
 
-    // Final fallback: estimate based on CPU and game state
     std::string currentGame = g_GameDetector.GetCurrentGameName();
     int cpuUsage = GetCPUUsage();
 
     if (currentGame != "none")
     {
-        // Game running - estimate based on CPU
         if (cpuUsage > 80)
             return 90;
         else if (cpuUsage > 60)
@@ -937,86 +869,11 @@ int GetGPUUsage()
     }
     else
     {
-        // No game - low GPU usage
         if (cpuUsage > 50)
             return 25;
         else
             return 10;
     }
-}
-
-// ============================================================
-// USB DEVICE DETECTION (Anti-Theft)
-// ============================================================
-
-std::vector<std::string> GetUSBDevices()
-{
-    std::vector<std::string> devices;
-
-    HDEVINFO deviceInfoSet = SetupDiGetClassDevs(
-        &GUID_DEVCLASS_USB,
-        nullptr,
-        nullptr,
-        DIGCF_PRESENT);
-
-    if (deviceInfoSet == INVALID_HANDLE_VALUE)
-    {
-        return devices;
-    }
-
-    SP_DEVINFO_DATA deviceInfoData;
-    deviceInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
-
-    DWORD deviceIndex = 0;
-    while (SetupDiEnumDeviceInfo(deviceInfoSet, deviceIndex, &deviceInfoData))
-    {
-        deviceIndex++;
-
-        char deviceName[256] = {0};
-        if (SetupDiGetDeviceRegistryPropertyA(
-                deviceInfoSet,
-                &deviceInfoData,
-                SPDRP_FRIENDLYNAME,
-                nullptr,
-                (PBYTE)deviceName,
-                sizeof(deviceName),
-                nullptr))
-        {
-            if (strlen(deviceName) > 0)
-            {
-                devices.push_back(std::string(deviceName));
-            }
-        }
-    }
-
-    SetupDiDestroyDeviceInfoList(deviceInfoSet);
-    return devices;
-}
-
-bool CheckUSBRemoval(std::vector<std::string> &previousDevices)
-{
-    std::vector<std::string> currentDevices = GetUSBDevices();
-
-    for (const std::string &oldDevice : previousDevices)
-    {
-        bool stillConnected = false;
-        for (const std::string &newDevice : currentDevices)
-        {
-            if (oldDevice == newDevice)
-            {
-                stillConnected = true;
-                break;
-            }
-        }
-        if (!stillConnected)
-        {
-            previousDevices = currentDevices;
-            return true;
-        }
-    }
-
-    previousDevices = currentDevices;
-    return false;
 }
 
 // ============================================================
@@ -1028,7 +885,6 @@ std::string GetActiveWindowTitle()
     HWND hwnd = GetForegroundWindow();
     if (!hwnd)
         return "";
-
     char title[256];
     GetWindowTextA(hwnd, title, sizeof(title));
     return std::string(title);
@@ -1039,15 +895,12 @@ bool IsWindowFullscreen()
     HWND hwnd = GetForegroundWindow();
     if (!hwnd)
         return false;
-
     RECT rect;
     GetWindowRect(hwnd, &rect);
     int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
-
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-
     return (width >= screenWidth * 0.85 && height >= screenHeight * 0.85);
 }
 
@@ -1060,7 +913,6 @@ void GetWindowSize(int &width, int &height)
         height = 0;
         return;
     }
-
     RECT rect;
     GetWindowRect(hwnd, &rect);
     width = rect.right - rect.left;
@@ -1079,7 +931,6 @@ std::string CollectTelemetry()
     int windowWidth = 0, windowHeight = 0;
     GetWindowSize(windowWidth, windowHeight);
 
-    // Build simplified telemetry JSON (NO hostname inside features)
     std::stringstream json;
     json << "{"
          << "\"process_name\":\"" << currentGame << "\","
@@ -1160,9 +1011,7 @@ std::string DiscoverServer(int timeout_seconds = 10)
                 std::string ip = message.substr(7);
                 size_t colonPos = ip.find(':');
                 if (colonPos != std::string::npos)
-                {
                     ip = ip.substr(0, colonPos);
-                }
                 LogMessage("[DISCOVERY] ✅ Server found at: " + ip);
                 closesocket(sock);
                 WSACleanup();
@@ -1178,7 +1027,7 @@ std::string DiscoverServer(int timeout_seconds = 10)
 }
 
 // ============================================================
-// SEND FUNCTIONS - UPDATED WITH HARDWARE
+// SEND FUNCTIONS
 // ============================================================
 
 bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoint)
@@ -1192,9 +1041,7 @@ bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoin
 
     size_t httpPos = host.find("://");
     if (httpPos != std::string::npos)
-    {
         host = host.substr(httpPos + 3);
-    }
 
     std::string hostname = host;
     int port = 8003;
@@ -1255,16 +1102,10 @@ bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoin
 
     char buffer[1024];
     recv(sock, buffer, sizeof(buffer) - 1, 0);
-
     closesocket(sock);
     WSACleanup();
-
     return true;
 }
-
-// ============================================================
-// SEND TELEMETRY - UPDATED WITH HARDWARE
-// ============================================================
 
 bool SendTelemetry()
 {
@@ -1273,8 +1114,6 @@ bool SendTelemetry()
 
     std::string telemetryData = CollectTelemetry();
     std::string macAddress = GetMACAddress();
-
-    // Get hardware info
     std::string cpuName = GetCPUName();
     std::string gpuName = GetGPUName();
     std::string ramSize = GetRAMSize();
@@ -1294,23 +1133,16 @@ bool SendTelemetry()
          << "}";
 
     std::string data = json.str();
-
-    // DEBUG: Log the full data being sent
     LogMessage("[DEBUG] ===== SENDING TELEMETRY =====");
     LogMessage("[DEBUG] Data: " + data);
     LogMessage("[DEBUG] ==============================");
-
     return SendTelemetryToEndpoint(data, "/api/heartbeat");
 }
 
 // ============================================================
-// HEARTBEAT - UPDATED WITH HARDWARE
-// ============================================================
-// ============================================================
-// SEND INSTALLED GAMES TO SERVER - WITH PROPER JSON ESCAPING
+// SEND INSTALLED GAMES
 // ============================================================
 
-// Helper function to escape JSON strings
 std::string EscapeJsonString(const std::string &input)
 {
     std::string output;
@@ -1349,9 +1181,7 @@ std::string EscapeJsonString(const std::string &input)
                 output += buf;
             }
             else
-            {
                 output += c;
-            }
             break;
         }
     }
@@ -1366,7 +1196,6 @@ bool SendInstalledGames()
     std::vector<InstalledGame> games = ScanInstalledGames();
     std::string macAddress = GetMACAddress();
 
-    // Debug: Log all games and their paths
     printf("[GAME SEND] Sending %zu games to server\n", games.size());
     for (const auto &game : games)
     {
@@ -1385,27 +1214,10 @@ bool SendInstalledGames()
     for (size_t i = 0; i < games.size(); i++)
     {
         const auto &game = games[i];
-
-        // Escape for JSON
-        auto escapeJson = [](const std::string &str)
-        {
-            std::string result;
-            for (char c : str)
-            {
-                if (c == '\\')
-                    result += "\\\\";
-                else if (c == '"')
-                    result += "\\\"";
-                else
-                    result += c;
-            }
-            return result;
-        };
-
         json << "{"
-             << "\"name\":\"" << escapeJson(game.name) << "\","
-             << "\"executable_path\":\"" << escapeJson(game.executable_path) << "\","
-             << "\"shortcut_path\":\"" << escapeJson(game.shortcut_path) << "\","
+             << "\"name\":\"" << EscapeJsonString(game.name) << "\","
+             << "\"executable_path\":\"" << EscapeJsonString(game.executable_path) << "\","
+             << "\"shortcut_path\":\"" << EscapeJsonString(game.shortcut_path) << "\","
              << "\"platform\":\"" << game.platform << "\","
              << "\"is_running\":" << (game.is_running ? "true" : "false")
              << "}";
@@ -1416,69 +1228,14 @@ bool SendInstalledGames()
     json << "]}";
 
     std::string data = json.str();
-
     printf("[GAME SEND] Full JSON: %s\n", data.c_str());
-
     return SendTelemetryToEndpoint(data, "/api/games/installed");
-}
-
-std::string GetHardwareTelemetry()
-{
-    int cpuUsage = GetCPUUsage();
-    int ramUsage = GetRAMUsage();
-    int gpuUsage = GetGPUUsage();
-    int cpuTemp = GetCPUTemperature();
-    std::string currentGame = g_GameDetector.GetCurrentGameName();
-    std::string macAddress = GetMACAddress();
-    std::string ipAddress = GetLocalIP();
-    std::string cpuName = GetCPUName();
-    std::string gpuName = GetGPUName();
-    std::string ramSize = GetRAMSize();
-
-    std::stringstream json;
-    json << "{"
-         << "\"pc_id\":\"" << macAddress << "\","
-         << "\"hostname\":\"" << g_Hostname << "\","
-         << "\"mac_address\":\"" << macAddress << "\","
-         << "\"ip_address\":\"" << ipAddress << "\","
-         << "\"features\":{"
-         << "\"cpu_usage\":" << cpuUsage << ","
-         << "\"ram_usage\":" << ramUsage << ","
-         << "\"gpu_usage\":" << gpuUsage << ","
-         << "\"cpu_temperature\":" << cpuTemp << ","
-         << "\"active_game\":\"" << currentGame << "\""
-         << "},"
-         << "\"hardware\":{"
-         << "\"cpu\":\"" << cpuName << "\","
-         << "\"gpu\":\"" << gpuName << "\","
-         << "\"ram\":\"" << ramSize << "\""
-         << "},"
-         << "\"status\":\"" << g_Status << "\","
-         << "\"timestamp\":\"" << GetTimestamp() << "\""
-         << "}";
-
-    return json.str();
-}
-
-bool SendHeartbeat(const std::string &hardwareData)
-{
-    if (SERVER_URL.empty())
-    {
-        LogMessage("[ERROR] SERVER_URL is empty!");
-        return false;
-    }
-
-    // DEBUG: Log heartbeat data
-    LogMessage("[DEBUG] ===== SENDING HEARTBEAT =====");
-    LogMessage("[DEBUG] Data: " + hardwareData);
-    LogMessage("[DEBUG] ==============================");
-
-    return SendTelemetryToEndpoint(hardwareData, "/api/heartbeat");
 }
 
 // ============================================================
 // COMMAND EXECUTION
 // ============================================================
+
 void ExecuteCommand(const std::string &command, const std::string &parameter)
 {
     LogMessage("[EXEC] Command received: " + command + " with param: " + parameter);
@@ -1486,8 +1243,6 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
     if (command == "LOCK")
     {
         LogMessage("[EXEC] Attempting to lock workstation...");
-
-        // Try LockWorkStation first
         if (LockWorkStation())
         {
             g_Status = "locked";
@@ -1495,24 +1250,16 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
         }
         else
         {
-            DWORD error = GetLastError();
-            LogMessage("[EXEC] ❌ Failed to lock screen. Error: " + std::to_string(error));
-
-            // Try alternative method using rundll32
+            LogMessage("[EXEC] ❌ Failed to lock screen. Error: " + std::to_string(GetLastError()));
             LogMessage("[EXEC] 🔄 Trying alternative lock method...");
             system("rundll32.exe user32.dll,LockWorkStation");
-
-            // Check if it worked
             Sleep(500);
-            LogMessage("[EXEC] Alternative lock attempted");
             g_Status = "locked";
         }
     }
     else if (command == "SHUTDOWN")
     {
         LogMessage("[EXEC] Attempting to shutdown system...");
-
-        // Try to get shutdown privilege
         HANDLE hToken;
         TOKEN_PRIVILEGES tkp;
 
@@ -1527,16 +1274,11 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
                 {
                     if (GetLastError() == ERROR_SUCCESS)
                     {
-                        LogMessage("[EXEC] 🔄 Shutdown privilege obtained");
                         if (ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER))
                         {
                             LogMessage("[EXEC] ✅ Shutdown initiated successfully");
                             CloseHandle(hToken);
                             return;
-                        }
-                        else
-                        {
-                            LogMessage("[EXEC] ❌ ExitWindowsEx failed. Error: " + std::to_string(GetLastError()));
                         }
                     }
                 }
@@ -1544,19 +1286,11 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
             CloseHandle(hToken);
         }
 
-        // Fallback: use system command
-        LogMessage("[EXEC] 🔄 Trying system shutdown command...");
         int result = system("shutdown /s /f /t 10 /c \"Gaming Agent: System shutdown initiated by admin\"");
         if (result == 0)
-        {
             LogMessage("[EXEC] ✅ Shutdown command sent successfully");
-        }
         else
         {
-            LogMessage("[EXEC] ❌ System shutdown failed with code: " + std::to_string(result));
-
-            // Second fallback: PowerShell
-            LogMessage("[EXEC] 🔄 Trying PowerShell shutdown...");
             system("powershell -Command \"Stop-Computer -Force\"");
             LogMessage("[EXEC] PowerShell shutdown attempted");
         }
@@ -1564,8 +1298,6 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
     else if (command == "RESTART")
     {
         LogMessage("[EXEC] Attempting to restart system...");
-
-        // Try to get shutdown privilege
         HANDLE hToken;
         TOKEN_PRIVILEGES tkp;
 
@@ -1580,16 +1312,11 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
                 {
                     if (GetLastError() == ERROR_SUCCESS)
                     {
-                        LogMessage("[EXEC] 🔄 Restart privilege obtained");
                         if (ExitWindowsEx(EWX_REBOOT | EWX_FORCE, SHTDN_REASON_MAJOR_OTHER))
                         {
                             LogMessage("[EXEC] ✅ Restart initiated successfully");
                             CloseHandle(hToken);
                             return;
-                        }
-                        else
-                        {
-                            LogMessage("[EXEC] ❌ ExitWindowsEx failed. Error: " + std::to_string(GetLastError()));
                         }
                     }
                 }
@@ -1597,19 +1324,11 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
             CloseHandle(hToken);
         }
 
-        // Fallback: use system command
-        LogMessage("[EXEC] 🔄 Trying system restart command...");
         int result = system("shutdown /r /f /t 10 /c \"Gaming Agent: System restart initiated by admin\"");
         if (result == 0)
-        {
             LogMessage("[EXEC] ✅ Restart command sent successfully");
-        }
         else
         {
-            LogMessage("[EXEC] ❌ System restart failed with code: " + std::to_string(result));
-
-            // Second fallback: PowerShell
-            LogMessage("[EXEC] 🔄 Trying PowerShell restart...");
             system("powershell -Command \"Restart-Computer -Force\"");
             LogMessage("[EXEC] PowerShell restart attempted");
         }
@@ -1630,26 +1349,19 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
     else if (command == "LAUNCH_GAME")
     {
         LogMessage("🎮 Launching game: " + parameter);
-        LogMessage("📂 Full path: " + parameter);
-
         std::string gamePath = parameter;
 
-        // Check if the file exists
         if (GetFileAttributesA(gamePath.c_str()) == INVALID_FILE_ATTRIBUTES)
         {
             LogMessage("❌ File not found: " + gamePath);
 
-            // Try to find the file by name
             std::string fileName = gamePath;
             size_t lastSlash = fileName.find_last_of("\\");
             if (lastSlash != std::string::npos)
-            {
                 fileName = fileName.substr(lastSlash + 1);
-            }
 
             LogMessage("🔍 Searching for: " + fileName);
 
-            // Search in common locations
             std::vector<std::string> searchPaths = {
                 "C:\\Program Files\\",
                 "C:\\Program Files (x86)\\",
@@ -1671,7 +1383,6 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
                 }
             }
 
-            // Search Downloads folder recursively
             if (!found)
             {
                 std::string downloadPath = "C:\\Users\\slims\\Downloads\\";
@@ -1706,42 +1417,25 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
         }
 
         LogMessage("🚀 Attempting to launch: " + gamePath);
-
-        // Launch the game
-        HINSTANCE result = ShellExecuteA(
-            NULL,
-            "open",
-            gamePath.c_str(),
-            NULL,
-            NULL,
-            SW_SHOW);
+        HINSTANCE result = ShellExecuteA(NULL, "open", gamePath.c_str(), NULL, NULL, SW_SHOW);
 
         if ((intptr_t)result > 32)
         {
             LogMessage("✅ Game launched successfully: " + gamePath);
-            // Send telemetry to update status
             SendTelemetry();
         }
         else
         {
             LogMessage("❌ Failed to launch game: " + gamePath);
             LogMessage("Error code: " + std::to_string((int)(intptr_t)result));
-
-            // Try alternative method
-            LogMessage("🔄 Trying alternative launch...");
             std::string cmd = "start \"\" \"" + gamePath + "\"";
             int systemResult = system(cmd.c_str());
             if (systemResult == 0)
-            {
                 LogMessage("✅ Alternative launch successful");
-            }
             else
-            {
                 LogMessage("❌ Alternative launch failed with code: " + std::to_string(systemResult));
-            }
         }
     }
-
     else
     {
         LogMessage("[EXEC] ❌ Unknown command: " + command);
@@ -1758,9 +1452,7 @@ bool PollForCommands()
 
     size_t httpPos = host.find("://");
     if (httpPos != std::string::npos)
-    {
         host = host.substr(httpPos + 3);
-    }
 
     std::string hostname = host;
     int port = 8003;
@@ -1822,35 +1514,26 @@ bool PollForCommands()
     bool hasCommands = false;
     if (!fullResponse.empty())
     {
-        // Find the JSON body
         size_t jsonStart = fullResponse.find('[');
         if (jsonStart == std::string::npos)
-        {
             jsonStart = fullResponse.find('{');
-        }
 
         if (jsonStart != std::string::npos)
         {
             std::string jsonBody = fullResponse.substr(jsonStart);
-
-            // Clean up
             while (!jsonBody.empty() && (jsonBody.back() == '\r' || jsonBody.back() == '\n' || jsonBody.back() == ' ' || jsonBody.back() == '\0'))
-            {
                 jsonBody.pop_back();
-            }
 
             LogMessage("[POLL] Response: " + jsonBody);
 
             if (!jsonBody.empty() && jsonBody != "[]" && jsonBody != "null")
             {
-                // Parse each command object
                 size_t pos = 0;
                 while (pos < jsonBody.length())
                 {
                     size_t objStart = jsonBody.find("{", pos);
                     if (objStart == std::string::npos)
                         break;
-
                     size_t objEnd = jsonBody.find("}", objStart);
                     if (objEnd == std::string::npos)
                         break;
@@ -1858,7 +1541,6 @@ bool PollForCommands()
                     std::string cmdObj = jsonBody.substr(objStart, objEnd - objStart + 1);
                     pos = objEnd + 1;
 
-                    // Extract action
                     std::string action = "";
                     size_t actionPos = cmdObj.find("\"action\"");
                     if (actionPos != std::string::npos)
@@ -1871,14 +1553,11 @@ bool PollForCommands()
                             {
                                 size_t quoteEnd = cmdObj.find("\"", quoteStart + 1);
                                 if (quoteEnd != std::string::npos)
-                                {
                                     action = cmdObj.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
-                                }
                             }
                         }
                     }
 
-                    // Extract parameter
                     std::string parameter = "";
                     size_t paramPos = cmdObj.find("\"parameter\"");
                     if (paramPos != std::string::npos)
@@ -1893,7 +1572,6 @@ bool PollForCommands()
                                 if (quoteEnd != std::string::npos)
                                 {
                                     parameter = cmdObj.substr(quoteStart + 1, quoteEnd - quoteStart - 1);
-                                    // Unescape backslashes
                                     std::string unescaped;
                                     for (size_t i = 0; i < parameter.length(); i++)
                                     {
@@ -1903,9 +1581,7 @@ bool PollForCommands()
                                             i++;
                                         }
                                         else
-                                        {
                                             unescaped += parameter[i];
-                                        }
                                     }
                                     parameter = unescaped;
                                 }
@@ -1917,7 +1593,6 @@ bool PollForCommands()
 
                     if (!action.empty())
                     {
-                        // Execute the command
                         if (action == "LAUNCH_GAME")
                         {
                             ExecuteCommand(action, parameter);
@@ -1925,19 +1600,16 @@ bool PollForCommands()
                         }
                         else if (action == "LOCK")
                         {
-                            LogMessage("[POLL] Executing LOCK command");
                             ExecuteCommand(action, "");
                             hasCommands = true;
                         }
                         else if (action == "SHUTDOWN")
                         {
-                            LogMessage("[POLL] Executing SHUTDOWN command");
                             ExecuteCommand(action, "");
                             hasCommands = true;
                         }
                         else if (action == "RESTART")
                         {
-                            LogMessage("[POLL] Executing RESTART command");
                             ExecuteCommand(action, "");
                             hasCommands = true;
                         }
@@ -1959,20 +1631,40 @@ bool PollForCommands()
 
     return hasCommands;
 }
+
 // ============================================================
-// USB MONITORING THREAD - UPDATED WITH HARDWARE
+// DEVICE MONITORING THREAD (NEW - uses device_monitor.h)
 // ============================================================
 
-void USBMonitoringThread()
+void DeviceMonitoringThread()
 {
-    std::vector<std::string> usbDevices = GetUSBDevices();
-    LogMessage("[USB] Monitoring USB devices...");
+    // Initial snapshot of input devices (keyboards + mice)
+    std::vector<InputDevice> previousDevices = GetInputDevices();
+
+    LogMessage("[DEVICE] Monitoring input devices (keyboard + mouse)...");
+    LogMessage("[DEVICE] Initial snapshot: " + std::to_string(previousDevices.size()) + " device(s)");
+    for (const auto &dev : previousDevices)
+    {
+        LogMessage("[DEVICE]   " + dev.deviceClass + ": " + dev.name);
+    }
 
     while (g_Running)
     {
-        if (CheckUSBRemoval(usbDevices))
+        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+        if (!g_Running)
+            break;
+
+        std::vector<InputDevice> currentDevices = GetInputDevices();
+
+        // Detect removals
+        std::vector<InputDevice> removed = DiffInputDevices(previousDevices, currentDevices);
+
+        if (!removed.empty())
         {
-            LogMessage("[USB] ⚠️ USB device removed! Sending alert...");
+            for (const auto &dev : removed)
+            {
+                LogMessage("[DEVICE] ⚠️ REMOVED: " + dev.deviceClass + " — " + dev.name);
+            }
 
             // Send alert to server
             if (!SERVER_URL.empty())
@@ -1985,7 +1677,21 @@ void USBMonitoringThread()
                 json << "{"
                      << "\"pc_id\":\"" << GetMACAddress() << "\","
                      << "\"hostname\":\"" << g_Hostname << "\","
-                     << "\"usb_removed\":true,"
+                     << "\"device_removed\":true,"
+                     << "\"removed_devices\":[";
+
+                for (size_t i = 0; i < removed.size(); i++)
+                {
+                    json << "{"
+                         << "\"class\":\"" << removed[i].deviceClass << "\","
+                         << "\"name\":\"" << EscapeJsonString(removed[i].name) << "\","
+                         << "\"instance_id\":\"" << EscapeJsonString(removed[i].instanceId) << "\""
+                         << "}";
+                    if (i < removed.size() - 1)
+                        json << ",";
+                }
+
+                json << "],"
                      << "\"hardware\":{"
                      << "\"cpu\":\"" << cpuName << "\","
                      << "\"gpu\":\"" << gpuName << "\","
@@ -1996,10 +1702,19 @@ void USBMonitoringThread()
 
                 SendTelemetryToEndpoint(json.str(), "/api/heartbeat");
             }
+
+            // Log newly connected devices too
+            std::vector<InputDevice> added = DiffInputDevices(currentDevices, previousDevices);
+            for (const auto &dev : added)
+            {
+                LogMessage("[DEVICE] ➕ CONNECTED: " + dev.deviceClass + " — " + dev.name);
+            }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+        previousDevices = currentDevices;
     }
+
+    LogMessage("[DEVICE] Monitoring stopped.");
 }
 
 // ============================================================
@@ -2010,8 +1725,8 @@ void AgentMainLoop()
 {
     LogMessage("Agent main loop started");
 
-    // Start USB monitoring thread
-    std::thread usbThread(USBMonitoringThread);
+    // Start device monitoring thread
+    std::thread deviceThread(DeviceMonitoringThread);
 
     auto lastCommandPoll = std::chrono::steady_clock::now();
     auto lastTelemetry = std::chrono::steady_clock::now();
@@ -2045,13 +1760,12 @@ void AgentMainLoop()
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    if (usbThread.joinable())
-    {
-        usbThread.join();
-    }
+    if (deviceThread.joinable())
+        deviceThread.join();
 
     LogMessage("Agent main loop stopped");
 }
+
 // ============================================================
 // SERVICE FUNCTIONS
 // ============================================================
@@ -2066,9 +1780,7 @@ void WINAPI ServiceCtrlHandler(DWORD dwCtrl)
         SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
         g_Running = false;
         if (g_ServiceThread.joinable())
-        {
             g_ServiceThread.join();
-        }
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
         SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
         break;
@@ -2087,14 +1799,9 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
     g_ServiceStatus.dwCheckPoint = 0;
     g_ServiceStatus.dwWaitHint = 30000;
 
-    g_hServiceStatus = RegisterServiceCtrlHandlerA(
-        "GamingAgent",
-        (LPHANDLER_FUNCTION)ServiceCtrlHandler);
-
+    g_hServiceStatus = RegisterServiceCtrlHandlerA("GamingAgent", (LPHANDLER_FUNCTION)ServiceCtrlHandler);
     if (g_hServiceStatus == NULL)
-    {
         return;
-    }
 
     g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
     SetServiceStatus(g_hServiceStatus, &g_ServiceStatus);
@@ -2105,13 +1812,11 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
     g_Hostname = GetHostname();
     g_Running = true;
 
-    // Discover server when running as service
     LogMessage("[SERVICE] Discovering server...");
-    std::string serverIP = DiscoverServer(15); // 15 second timeout for service
+    std::string serverIP = DiscoverServer(15);
     if (serverIP.empty())
     {
         LogMessage("[SERVICE] ⚠️ Server discovery failed, will retry in main loop");
-        // Set a default but it will be empty
         SERVER_URL = "";
     }
     else
@@ -2124,10 +1829,9 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
 
     while (g_Running)
     {
-        // If SERVER_URL is empty, try to rediscover periodically
         if (SERVER_URL.empty())
         {
-            Sleep(30000); // Wait 30 seconds before retry
+            Sleep(30000);
             LogMessage("[SERVICE] Retrying server discovery...");
             serverIP = DiscoverServer(10);
             if (!serverIP.empty())
@@ -2143,9 +1847,7 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
     }
 
     if (g_ServiceThread.joinable())
-    {
         g_ServiceThread.join();
-    }
 
     WSACleanup();
 
@@ -2166,15 +1868,10 @@ void InstallService()
         GetModuleFileNameA(NULL, szPath, MAX_PATH);
 
         SC_HANDLE hService = CreateServiceA(
-            hSCManager,
-            "GamingAgent",
-            "Gaming Agent Service",
-            SERVICE_ALL_ACCESS,
-            SERVICE_WIN32_OWN_PROCESS,
-            SERVICE_AUTO_START,
-            SERVICE_ERROR_NORMAL,
-            szPath,
-            NULL, NULL, NULL, NULL, NULL);
+            hSCManager, "GamingAgent", "Gaming Agent Service",
+            SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
+            szPath, NULL, NULL, NULL, NULL, NULL);
 
         if (hService)
         {
@@ -2213,13 +1910,9 @@ void UninstallService()
             }
 
             if (DeleteService(hService))
-            {
                 printf("[SUCCESS] Service 'GamingAgent' uninstalled!\n");
-            }
             else
-            {
                 printf("[ERROR] Failed to uninstall service. Error: %d\n", GetLastError());
-            }
             CloseServiceHandle(hService);
         }
         else
@@ -2243,13 +1936,9 @@ void StartService()
         if (hService)
         {
             if (StartServiceA(hService, 0, NULL))
-            {
                 printf("[SUCCESS] Service 'GamingAgent' started!\n");
-            }
             else
-            {
                 printf("[ERROR] Failed to start service. Error: %d\n", GetLastError());
-            }
             CloseServiceHandle(hService);
         }
         else
@@ -2274,13 +1963,9 @@ void StopService()
         {
             SERVICE_STATUS status;
             if (ControlService(hService, SERVICE_CONTROL_STOP, &status))
-            {
                 printf("[SUCCESS] Service 'GamingAgent' stopped!\n");
-            }
             else
-            {
                 printf("[ERROR] Failed to stop service. Error: %d\n", GetLastError());
-            }
             CloseServiceHandle(hService);
         }
         else
@@ -2346,22 +2031,22 @@ int main()
         InstallService();
         return 0;
     }
-    else if (strstr(GetCommandLineA(), "--uninstall"))
+    if (strstr(GetCommandLineA(), "--uninstall"))
     {
         UninstallService();
         return 0;
     }
-    else if (strstr(GetCommandLineA(), "--start"))
+    if (strstr(GetCommandLineA(), "--start"))
     {
         StartService();
         return 0;
     }
-    else if (strstr(GetCommandLineA(), "--stop"))
+    if (strstr(GetCommandLineA(), "--stop"))
     {
         StopService();
         return 0;
     }
-    else if (strstr(GetCommandLineA(), "--status"))
+    if (strstr(GetCommandLineA(), "--status"))
     {
         ShowServiceStatus();
         return 0;
@@ -2385,6 +2070,15 @@ int main()
 
     g_Hostname = GetHostname();
 
+    // ─── Show input devices at startup ───
+    auto devices = GetInputDevices();
+    std::cout << "===========================================" << std::endl;
+    std::cout << "   INPUT DEVICES DETECTED" << std::endl;
+    std::cout << "===========================================" << std::endl;
+    for (const auto &device : devices)
+    {
+        std::cout << device.deviceClass << ": " << device.name << " [OK]" << std::endl;
+    }
     std::cout << "===========================================" << std::endl;
     std::cout << "   GAMING PC AGENT (C++)" << std::endl;
     std::cout << "===========================================" << std::endl;
@@ -2413,7 +2107,6 @@ int main()
     SERVER_URL = "http://" + serverIP + ":8003";
     std::cout << "✅ Server found at: " << SERVER_URL << std::endl;
     std::cout << "===========================================" << std::endl;
-
     std::cout << "Agent is running. Press Enter to stop..." << std::endl;
 
     std::thread agentThread(AgentMainLoop);
@@ -2423,9 +2116,7 @@ int main()
     g_Running = false;
 
     if (agentThread.joinable())
-    {
         agentThread.join();
-    }
 
     WSACleanup();
 
