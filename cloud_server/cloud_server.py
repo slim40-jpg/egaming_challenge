@@ -9,7 +9,8 @@ from flask_jwt_extended import (
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
 
-from models import db, User, PCMirror, Reservation
+# 👇 Updated Import to include Transaction
+from models import db, User, PCMirror, Reservation, Transaction
 
 load_dotenv()
 
@@ -96,6 +97,7 @@ def register():
         email=email,
         password_hash=bcrypt.generate_password_hash(password).decode(),
         role=role,
+        wallet_balance=0.0  # Initialize wallet to 0
     )
     db.session.add(user)
     db.session.commit()
@@ -104,9 +106,7 @@ def register():
         identity=str(user.id),
         additional_claims={'username': user.username, 'role': user.role},
     )
-    return jsonify({'status': 'ok', 'access_token': token, 'user': {
-        'id': user.id, 'username': user.username, 'role': user.role
-    }}), 201
+    return jsonify({'status': 'ok', 'access_token': token, 'user': user.to_dict()}), 201
 
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -123,9 +123,7 @@ def login():
         identity=str(user.id),
         additional_claims={'username': user.username, 'role': user.role},
     )
-    return jsonify({'status': 'ok', 'access_token': token, 'user': {
-        'id': user.id, 'username': user.username, 'role': user.role
-    }})
+    return jsonify({'status': 'ok', 'access_token': token, 'user': user.to_dict()})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -173,7 +171,13 @@ def availability():
 @jwt_required()
 def my_reservations():
     user_id = int(get_jwt_identity())
-    rows = Reservation.query.filter_by(user_id=user_id).order_by(
+    # Note: Your Reservation model uses user_email, not user_id. 
+    # You might need to fetch the user's email first to filter correctly.
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+        
+    rows = Reservation.query.filter_by(user_email=user.email).order_by(
         Reservation.start_time.desc()
     ).all()
     return jsonify({'status': 'ok', 'reservations': [r.to_dict() for r in rows]})
@@ -183,8 +187,11 @@ def my_reservations():
 @jwt_required()
 def create_reservation():
     user_id = int(get_jwt_identity())
-    data = request.get_json() or {}
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
 
+    data = request.get_json() or {}
     pc_id = data.get('pc_id')
     start = data.get('start_time')
     end = data.get('end_time')
@@ -220,7 +227,9 @@ def create_reservation():
         return jsonify({'error': 'time slot already booked'}), 409
 
     r = Reservation(
-        user_id=user_id,
+        id=os.urandom(16).hex(), # Generate a UUID string
+        user_name=user.username,
+        user_email=user.email,
         center_id=center_id,
         pc_id=pc_id,
         start_time=start_dt,
@@ -241,13 +250,127 @@ def cancel_reservation(rid):
     r = Reservation.query.get(rid)
     if not r:
         return jsonify({'error': 'reservation not found'}), 404
-    if r.user_id != user_id and claims.get('role') != 'admin':
+        
+    user = User.query.get(user_id)
+    if r.user_email != user.email and claims.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
 
     r.status = 'cancelled'
-    r.updated_at = datetime.utcnow()
     db.session.commit()
     return jsonify({'status': 'ok', 'reservation': r.to_dict()})
+
+
+# ─────────────────────────────────────────────────────────────
+# 👇 NEW: WALLET ENDPOINTS (Cloud-based, Player-facing)
+# ─────────────────────────────────────────────────────────────
+
+@app.route('/api/wallet', methods=['GET'])
+@jwt_required()
+def get_wallet():
+    """Player views their own wallet balance"""
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
+        
+    return jsonify({
+        'status': 'ok',
+        'wallet': {
+            'balance': user.wallet_balance,
+            'currency': 'TND'
+        }
+    })
+
+@app.route('/api/wallet/recharge', methods=['POST'])
+@jwt_required()
+def recharge_wallet():
+    """
+    Player recharges their wallet from the cloud.
+    In a real app, this would be called AFTER a successful payment gateway webhook.
+    For the MVP, we simulate the payment success here.
+    """
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    data = request.get_json() or {}
+    
+    amount = data.get('amount')
+    
+    if not amount or not isinstance(amount, (int, float)) or amount <= 0:
+        return jsonify({'error': 'Valid positive amount is required'}), 400
+
+    # Update Balance
+    user.wallet_balance += amount
+    
+    # Create Audit Log
+    tx = Transaction(
+        user_id=user.id,
+        amount=amount,
+        type='recharge',
+        description=f'Cloud recharge of {amount} TND'
+    )
+    
+    db.session.add(tx)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'message': 'Wallet recharged successfully',
+        'new_balance': user.wallet_balance,
+        'transaction': tx.to_dict()
+    }), 200
+
+@app.route('/api/wallet/transactions', methods=['GET'])
+@jwt_required()
+def get_transactions():
+    """Player views their recharge/deduction history"""
+    user_id = int(get_jwt_identity())
+    txs = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.timestamp.desc()).all()
+    return jsonify({
+        'status': 'ok',
+        'transactions': [tx.to_dict() for tx in txs]
+    })
+
+@app.route('/api/wallet/deduct', methods=['POST'])
+@center_auth_required # 👈 Uses your existing center API key logic
+def deduct_wallet():
+    """
+    Called by the Local Host PC when a gaming session ends.
+    Payload: { "username": "player1", "amount": 5.0, "duration_minutes": 60 }
+    """
+    data = request.get_json() or {}
+    username = data.get('username')
+    amount = data.get('amount')
+    duration = data.get('duration_minutes', 0)
+    
+    if not username or not amount:
+        return jsonify({'error': 'username and amount required'}), 400
+        
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'Player not found in cloud'}), 404
+        
+    if user.wallet_balance < amount:
+        return jsonify({'error': 'Insufficient funds', 'balance': user.wallet_balance}), 402
+        
+    # Deduct
+    user.wallet_balance -= amount
+    
+    # Log
+    tx = Transaction(
+        user_id=user.id,
+        amount=amount,
+        type='session_deduction',
+        description=f'Gaming session ({duration} mins)'
+    )
+    
+    db.session.add(tx)
+    db.session.commit()
+    
+    return jsonify({
+        'status': 'ok',
+        'new_balance': user.wallet_balance,
+        'message': 'Session deducted successfully'
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -266,7 +389,6 @@ def sync_center(center_id):
         if not pc_id:
             continue
 
-        # ✅ Normalize installed_games → list of strings
         raw_games = entry.get('installed_games') or []
         game_names = []
         for g in raw_games:
@@ -283,12 +405,13 @@ def sync_center(center_id):
         row.name = entry.get('name') or row.name or 'PC'
         row.online = bool(entry.get('online'))
         row.state = entry.get('state') or 'offline'
-        row.installed_games = game_names          # ✅ strings only
+        row.installed_games = game_names
         row.last_sync = datetime.utcnow()
         updated += 1
 
     db.session.commit()
     return jsonify({'status': 'ok', 'updated': updated, 'center_id': center_id})
+
 
 @app.route('/api/sync/center/<center_id>/reservations', methods=['GET'])
 @center_auth_required
@@ -299,11 +422,11 @@ def sync_reservations(center_id):
     if since_str:
         try:
             since_dt = datetime.fromisoformat(since_str.replace('Z', '+00:00')).replace(tzinfo=None)
-            q = q.filter(Reservation.updated_at >= since_dt)
+            q = q.filter(Reservation.created_at >= since_dt)
         except ValueError:
             return jsonify({'error': 'invalid since format'}), 400
 
-    rows = q.order_by(Reservation.updated_at.asc()).all()
+    rows = q.order_by(Reservation.created_at.asc()).all()
     return jsonify({
         'status': 'ok',
         'server_time': datetime.utcnow().isoformat(),
@@ -322,12 +445,14 @@ def ensure_seed():
             username='admin',
             password_hash=bcrypt.generate_password_hash('admin123').decode(),
             role='admin',
+            wallet_balance=0.0
         ))
     if not User.query.filter_by(username='player1').first():
         db.session.add(User(
             username='player1',
             password_hash=bcrypt.generate_password_hash('player123').decode(),
             role='player',
+            wallet_balance=50.0 # Give the test player some starting money
         ))
     db.session.commit()
 

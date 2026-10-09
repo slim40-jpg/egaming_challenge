@@ -295,7 +295,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       
       const data = await response.json();
       if (data.status === 'ok') {
-        toast.success(`Session terminée - ${data.session.duration_minutes}m, ${data.session.cost.toFixed(2)}€`);
+        toast.success(`Session terminée - ${data.session.duration_minutes}m, ${data.session.cost.toFixed(2)}dt`);
         if (timerInterval.current) {
           clearInterval(timerInterval.current);
           timerInterval.current = null;
@@ -357,7 +357,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       
       const data = await response.json();
       if (data.status === 'ok') {
-        toast.success(`Wallet rechargé de ${topupAmount}€`);
+        toast.success(`Wallet rechargé de ${topupAmount}dt`);
         fetchWallet();
       } else {
         toast.error(data.message || 'Erreur');
@@ -489,7 +489,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
               </div>
               <div>
                 <span className="text-gray-500">Wallet: </span>
-                <span className="text-yellow-400 font-bold">{walletBalance || 0}€</span>
+                <span className="text-yellow-400 font-bold">{walletBalance || 0}dt</span>
               </div>
             </div>
           </div>
@@ -621,7 +621,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
               <h2 className="text-lg font-semibold text-[#e94560] mb-4">💰 Portefeuille</h2>
               <div className="text-center mb-4">
-                <div className="text-3xl font-bold text-yellow-400">{walletBalance || 0}€</div>
+                <div className="text-3xl font-bold text-yellow-400">{walletBalance || 0}dt</div>
                 <div className="text-xs text-gray-500">Solde disponible</div>
               </div>
               <div className="flex gap-2">
@@ -662,7 +662,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                     </div>
                     <div className="flex justify-between text-sm mt-1">
                       <span className="text-gray-500">💵 Coût</span>
-                      <span className="text-yellow-400 font-bold">{sessionCost.toFixed(2)}€</span>
+                      <span className="text-yellow-400 font-bold">{sessionCost.toFixed(2)}dt</span>
                     </div>
                   </div>
                   <button
@@ -676,14 +676,14 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                 <>
                   <div className="bg-[#0f0f23] rounded-lg p-4 mb-4 text-center">
                     <div className="text-yellow-400 text-sm font-semibold">
-                      💰 0.10€ / minute
+                      💰 0.10dt / minute
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                      Solde: {walletBalance || 0}€
+                      Solde: {walletBalance || 0}dt   
                     </div>
                     {walletBalance < 1 && (
                       <div className="text-xs text-red-400 mt-1">
-                        ⚠️ Solde insuffisant (min 1€)
+                        ⚠️ Solde insuffisant (min 1dt)
                       </div>
                     )}
                   </div>

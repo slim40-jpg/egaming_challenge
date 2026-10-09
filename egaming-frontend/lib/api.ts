@@ -68,6 +68,14 @@ export const cloud = {
 
   cancelReservation: (id: number) =>
     cloudApi.post(`/api/reservations/${id}/cancel`),
+
+  // 👇 NEW: Cloud Wallet Endpoints (Player-facing)
+  getWallet: () => cloudApi.get('/api/wallet'),
+  
+  rechargeWallet: (amount: number) => 
+    cloudApi.post('/api/wallet/recharge', { amount }),
+  
+  getTransactions: () => cloudApi.get('/api/wallet/transactions'),
 };
 
 // ─── Local calls (admin only) ────────────────────────────
@@ -83,8 +91,7 @@ export const local = {
       user_name: userName,
     }),
 
-  endSession: (pcId: string) =>
-    localApi.post('/api/session/end', { pc_id: pcId }),
+  endSession: (pcId: string) => localApi.post('/api/session/end', { pc_id: pcId }),
 
   command: (pcId: string, command: string) =>
     localApi.post('/api/command', { pc_id: pcId, command }),

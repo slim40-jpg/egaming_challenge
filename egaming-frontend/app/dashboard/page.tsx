@@ -89,21 +89,38 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold text-white">
             🎮 Ninety Gaming House
           </h1>
-          <div className="flex items-center gap-4 flex-wrap">
-            <span className="text-gray-400">
-              👤 {user?.username} ({user?.role})
-            </span>
-            {isAdmin && (
-              <span className="text-xs bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full">
-                🔐 ADMIN
+          
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* User Info & Admin Badge */}
+            <div className="flex items-center gap-2 mr-2">
+              <span className="text-gray-400 text-sm">
+                👤 {user?.username}
               </span>
-            )}
-            <Link href="/reservations" className="text-[#e94560] hover:underline">
+              {isAdmin && (
+                <span className="text-[10px] bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full font-bold">
+                  ADMIN
+                </span>
+              )}
+            </div>
+
+            {/* Navigation Links */}
+            <Link 
+              href="/profil" 
+              className="px-3 py-1.5 bg-[#1a1a2e] border border-[#2a2a4a] rounded-lg text-sm text-white hover:border-[#e94560] transition"
+            >
+              👤 Mon Profil
+            </Link>
+            
+            <Link 
+              href="/reservations" 
+              className="px-3 py-1.5 bg-[#1a1a2e] border border-[#2a2a4a] rounded-lg text-sm text-white hover:border-[#e94560] transition"
+            >
               📅 Mes réservations
             </Link>
+
             <button
               onClick={logout}
-              className="px-3 py-1 bg-[#2a2a4a] rounded-lg text-white hover:bg-[#3a3a5a]"
+              className="px-3 py-1.5 bg-[#2a2a4a] rounded-lg text-white hover:bg-[#3a3a5a] text-sm transition"
             >
               Déconnexion
             </button>

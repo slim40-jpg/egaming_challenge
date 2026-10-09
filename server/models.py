@@ -42,6 +42,7 @@ class User(db.Model):
     last_login = db.Column(db.DateTime)
 
     is_active = db.Column(db.Boolean)
+    
 
 class PC(db.Model):
     __tablename__ = 'pcs'

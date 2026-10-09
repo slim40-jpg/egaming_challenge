@@ -12,6 +12,40 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), default='player')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # 👇 NEW: Player Wallet Balance
+    wallet_balance = db.Column(db.Float, default=0.0)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'role': self.role,
+            'wallet_balance': self.wallet_balance,
+            'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+# 👇 NEW: Transaction Model for Audit Logging
+class Transaction(db.Model):
+    __tablename__ = 'transactions'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    type = db.Column(db.String(20), nullable=False)  # 'recharge' or 'session_deduction'
+    description = db.Column(db.String(200))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'amount': self.amount,
+            'type': self.type,
+            'description': self.description,
+            'timestamp': self.timestamp.isoformat()
+        }
 
 
 class PCMirror(db.Model):
@@ -43,64 +77,18 @@ class PCMirror(db.Model):
 class Reservation(db.Model):
     __tablename__ = 'reservations'
 
-    id = db.Column(
-        db.String(36),
-        primary_key=True
-    )
-
-    pc_id = db.Column(
-        db.String(50),
-        nullable=False
-    )
-
-    center_id = db.Column(
-        db.String(50),
-        nullable=False,
-        default='main'
-    )
-
-    user_name = db.Column(
-        db.String(100),
-        nullable=False
-    )
-
-    user_email = db.Column(
-        db.String(100),
-        nullable=False
-    )
-
-    user_phone = db.Column(
-        db.String(20)
-    )
-
-    start_time = db.Column(
-        db.DateTime,
-        nullable=False
-    )
-
-    end_time = db.Column(
-        db.DateTime,
-        nullable=False
-    )
-
-    status = db.Column(
-        db.String(20),
-        default='accepted'
-    )
-
-    synced = db.Column(
-        db.Boolean,
-        default=False
-    )
-
-    synced_at = db.Column(
-        db.DateTime
-    )
-
-    created_at = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
+    id = db.Column(db.String(36), primary_key=True)
+    pc_id = db.Column(db.String(50), nullable=False)
+    center_id = db.Column(db.String(50), nullable=False, default='main')
+    user_name = db.Column(db.String(100), nullable=False)
+    user_email = db.Column(db.String(100), nullable=False)
+    user_phone = db.Column(db.String(20))
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(20), default='accepted')
+    synced = db.Column(db.Boolean, default=False)
+    synced_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def to_dict(self):
         return {
@@ -117,4 +105,3 @@ class Reservation(db.Model):
             'synced_at': self.synced_at.isoformat() if self.synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
-    

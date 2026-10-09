@@ -951,7 +951,7 @@ std::string CollectTelemetry()
 // NETWORK FUNCTIONS
 // ============================================================
 
-std::string DiscoverServer(int timeout_seconds = 10)
+std::string DiscoverServer(int timeout_seconds = 20)
 {
     LogMessage("[DISCOVERY] Searching for server on the network...");
     LogMessage("[DISCOVERY] Listening on port " + std::to_string(DISCOVERY_PORT));
