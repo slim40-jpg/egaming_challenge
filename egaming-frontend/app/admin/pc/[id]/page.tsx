@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
 import type { PC, Game } from '@/lib/types';
-import { cloud } from '@/lib/api'; // 👈 Import cloud API for user fetching
+import { cloud } from '@/lib/api';
 import React from 'react';
 
 type CloudUser = {
@@ -20,10 +20,10 @@ type CloudUser = {
 
 export default function PCDetail({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
-  
+
   // ✅ Déballer params avec React.use()
   const { id: pcId } = React.use(params);
-  
+
   const [pc, setPC] = useState<PC | null>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,28 +33,28 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   const [topupAmount, setTopupAmount] = useState(5);
   const [isAdmin, setIsAdmin] = useState(false);
   const [refreshingGames, setRefreshingGames] = useState(false);
-  
-  // 👇 NEW: State for user selection
+
+  // 👇 User selection
   const [users, setUsers] = useState<CloudUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
-  
+
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const refreshInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     console.log('🔍 Params:', params);
     console.log('🔍 PC ID:', pcId);
-  
+
     if (!pcId || pcId === 'undefined') {
-       console.error('❌ Invalid PC ID');
-       toast.error('ID du PC invalide');
-       router.push('/dashboard');
-       return;
+      console.error('❌ Invalid PC ID');
+      toast.error('ID du PC invalide');
+      router.push('/dashboard');
+      return;
     }
 
     const localToken = localStorage.getItem('access_token');
     const cloudToken = localStorage.getItem('cloud_access_token');
-  
+
     if (!localToken && !cloudToken) {
       console.log('❌ No token found, redirecting to login');
       router.push('/login');
@@ -65,41 +65,39 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
     const cloud_user_json = JSON.parse(localStorage.getItem('cloud_user') || '{}');
     const isAdminUser = cloud_user_json.username === 'admin';
     console.log('🔑 Username:', cloud_user_json.username);
- 
+
     if (!isAdminUser) {
       console.log('❌ User is not admin:', cloud_user_json.username);
       toast.error('Accès non autorisé. Cette page est réservée à l\'administrateur.');
       router.push('/dashboard');
       return;
     }
-  
+
     setIsAdmin(true);
     console.log('✅ Admin access granted');
 
     fetchPCData();
     fetchGames();
     fetchWallet();
-    loadUsers(); // 👈 Load users on mount
-  
+    loadUsers();
+
     refreshInterval.current = setInterval(() => {
       fetchPCData();
       fetchGamesSilently();
-      // Note: We don't auto-refresh users list to avoid disrupting selection
     }, 5000);
-  
+
     return () => {
       if (refreshInterval.current) clearInterval(refreshInterval.current);
       if (timerInterval.current) clearInterval(timerInterval.current);
     };
   }, [pcId]);
 
-  // 👇 NEW: Fetch all users from Cloud
+  // 👇 Fetch all users from Cloud
   const loadUsers = async () => {
     try {
       const res = await cloud.adminListUsers();
       const playerUsers = (res.data.users || []).filter((u: CloudUser) => u.role === 'player');
       setUsers(playerUsers);
-      // Auto-select the first player if none selected
       if (playerUsers.length > 0 && !selectedUserId) {
         setSelectedUserId(playerUsers[0].id.toString());
       }
@@ -109,7 +107,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
     }
   };
 
-  // 👇 NEW: Update wallet display when user selection changes
+  // 👇 Update wallet display when user selection changes
   useEffect(() => {
     if (selectedUserId) {
       const user = users.find(u => u.id === parseInt(selectedUserId));
@@ -153,7 +151,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       const data = await response.json();
       console.log('✅ PC Data received:', data);
       setPC(data);
-      
+
       if (data.in_session && data.session) {
         const start = new Date(data.session.start_time);
         const now = new Date();
@@ -161,10 +159,10 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         const mins = String(Math.floor(diff / 60)).padStart(2, '0');
         const secs = String(diff % 60).padStart(2, '0');
         setSessionTime(`${mins}:${secs}`);
-        
+
         const cost = (diff / 60) * (data.session.price_per_minute || 0.10);
         setSessionCost(cost);
-        
+
         if (!timerInterval.current) {
           timerInterval.current = setInterval(() => {
             setSessionTime(prev => {
@@ -214,7 +212,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
       });
       const data = await response.json();
-      
+
       if (data.status === 'ok') {
         const gamesWithPaths = (data.games || []).map((game: any) => ({
           ...game,
@@ -243,7 +241,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
       });
       const data = await response.json();
-      
+
       if (data.status === 'ok') {
         const gamesWithPaths = (data.games || []).map((game: any) => ({
           ...game,
@@ -281,7 +279,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       return;
     }
 
-    // 👇 NEW: Validate user selection
     const user = users.find(u => u.id === parseInt(selectedUserId));
     if (!user) {
       toast.error('Veuillez sélectionner un joueur');
@@ -304,10 +301,10 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
         body: JSON.stringify({
           pc_id: pcId,
-          user_name: user.username, // 👈 Use selected user's username
+          user_name: user.username,
         }),
       });
-      
+
       const data = await response.json();
       if (data.status === 'ok') {
         toast.success(`Session démarrée pour ${user.username}`);
@@ -327,7 +324,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
     }
 
     if (!confirm('Terminer la session ?')) return;
-    
+
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
@@ -339,7 +336,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
         body: JSON.stringify({ pc_id: pcId }),
       });
-      
+
       const data = await response.json();
       if (data.status === 'ok') {
         toast.success(`Session terminée - ${data.session.duration_minutes}m, ${data.session.cost.toFixed(2)}dt`);
@@ -348,7 +345,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
           timerInterval.current = null;
         }
         fetchPCData();
-        loadUsers(); // 👈 Refresh user list to update balances after deduction
+        loadUsers();
       } else {
         toast.error(data.message || 'Erreur');
       }
@@ -365,7 +362,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
 
     if (command === 'SHUTDOWN' && !confirm('⚠️ Éteindre ce PC ?')) return;
     if (command === 'RESTART' && !confirm('⚠️ Redémarrer ce PC ?')) return;
-    
+
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
@@ -377,7 +374,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
         body: JSON.stringify({ pc_id: pcId, command: command }),
       });
-      
+
       const data = await response.json();
       if (data.status === 'ok') {
         toast.success(`Commande "${command}" envoyée`);
@@ -389,9 +386,42 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
     }
   };
 
+  // 👇 NEW: Dedicated UNLOCK handler
+  const handleUnlock = async () => {
+    if (!pcId || pcId === 'undefined') {
+      toast.error('ID du PC invalide');
+      return;
+    }
+
+    if (!confirm('Déverrouiller ce PC ?')) return;
+
+    try {
+      const token = localStorage.getItem('access_token');
+      const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
+      const response = await fetch(`${apiUrl}/api/command`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ pc_id: pcId, command: 'UNLOCK' }),
+      });
+
+      const data = await response.json();
+      if (data.status === 'ok') {
+        toast.success('Commande de déverrouillage envoyée');
+        setTimeout(() => {
+          fetchPCData();
+        }, 1500);
+      } else {
+        toast.error(data.message || 'Erreur lors du déverrouillage');
+      }
+    } catch (error) {
+      toast.error('Erreur lors de l\'envoi');
+    }
+  };
+
   const handleTopup = async () => {
-    // Note: This is the LOCAL wallet topup (for the admin's own wallet)
-    // For player topups, use the /admin/users page
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
@@ -403,7 +433,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
         body: JSON.stringify({ amount: topupAmount }),
       });
-      
+
       const data = await response.json();
       if (data.status === 'ok') {
         toast.success(`Wallet rechargé de ${topupAmount}dt`);
@@ -418,22 +448,22 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
 
   const handleLaunchGame = async (game: Game) => {
     console.log('🎮 Launching game:', game);
-    
+
     const executablePath = game.executable_path;
-    
+
     if (!executablePath || executablePath === '' || executablePath === 'NO_PATH') {
       toast.error(`Chemin d'exécution manquant pour "${game.name}"`);
       return;
     }
-    
+
     if (!executablePath.toLowerCase().includes('.exe')) {
       if (!confirm(`Le chemin "${executablePath}" ne semble pas être un fichier exe. Continuer quand même ?`)) {
         return;
       }
     }
-    
+
     if (!confirm(`Lancer "${game.name}" ?`)) return;
-    
+
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
@@ -450,9 +480,9 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
           shortcut: game.shortcut_path || '',
         }),
       });
-      
+
       const data = await response.json();
-      
+
       if (data.status === 'ok') {
         toast.success(`Lancement de ${game.name}`);
         setTimeout(fetchGames, 3000);
@@ -618,7 +648,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                   {refreshingGames ? '⏳' : '🔄'}
                 </button>
               </div>
-              
+
               {games.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <div className="text-4xl mb-2">🎮</div>
@@ -635,14 +665,14 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                   {games.map((game, index) => {
                     const hasPath = !!(game.executable_path && game.executable_path !== '');
                     const icon = getGameIcon(game.name);
-                    
+
                     return (
                       <div
                         key={index}
                         onClick={() => hasPath ? handleLaunchGame(game) : toast.error('Chemin d\'exécution manquant')}
                         className={`bg-[#0f0f23] rounded-xl p-4 text-center transition-all hover:transform hover:-translate-y-1 border-2 ${
-                          game.is_running ? 'border-green-500' : 
-                          hasPath ? 'border-[#2a2a4a] hover:border-[#e94560] cursor-pointer' : 
+                          game.is_running ? 'border-green-500' :
+                          hasPath ? 'border-[#2a2a4a] hover:border-[#e94560] cursor-pointer' :
                           'border-red-500/50 opacity-60 cursor-not-allowed'
                         }`}
                       >
@@ -664,7 +694,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
             {/* Session Controls */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
               <h2 className="text-lg font-semibold text-[#e94560] mb-4">🎮 Session</h2>
-              
+
               {isInSession ? (
                 <>
                   <div className="bg-[#0f0f23] rounded-lg p-4 mb-4 border-l-2 border-yellow-500">
@@ -700,7 +730,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                     </div>
                   </div>
 
-                  {/* 👇 NEW: User Selection Dropdown */}
+                  {/* User Selection Dropdown */}
                   <div className="mb-4">
                     <label className="block text-xs text-gray-400 mb-1">Sélectionner le joueur</label>
                     <select
@@ -748,6 +778,21 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
             {/* Remote Controls */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
               <h2 className="text-lg font-semibold text-[#e94560] mb-4">🔧 Contrôles Admin</h2>
+
+              {/* 👇 UNLOCK button — only visible when PC is locked (session active) */}
+              {isInSession && (
+                <button
+                  onClick={handleUnlock}
+                  className="w-full mb-4 bg-gradient-to-r from-green-500 to-emerald-500
+                             text-white py-3 rounded-lg
+                             hover:from-green-600 hover:to-emerald-600
+                             transition font-bold text-base
+                             shadow-lg shadow-green-500/30 animate-pulse"
+                >
+                  🔓 Déverrouiller le PC
+                </button>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => handleCommand('LOCK')}

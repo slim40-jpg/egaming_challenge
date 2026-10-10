@@ -1,5 +1,5 @@
 // ============================================================
-// GAMING PC AGENT - CLEAN VERSION (NO ML)
+// GAMING PC AGENT - CLEAN VERSION (NO ML) + OS LOCKDOWN
 // ============================================================
 
 #define _WIN32_WINNT 0x0A00
@@ -86,7 +86,7 @@ std::string GetModuleName(const MODULEENTRY32 &me32)
 }
 
 // ============================================================
-// GAME DETECTOR CLASS  (unchanged)
+// GAME DETECTOR CLASS
 // ============================================================
 
 class GameDetector
@@ -403,10 +403,20 @@ std::string g_Hostname;
 std::string g_Status = "online";
 std::atomic<bool> g_Running{true};
 std::string g_SessionUser = "";
+std::atomic<bool> g_IsLocked{false};
+
+// ─── Session time tracking ───
+std::atomic<bool> g_SessionActive{false};
+std::chrono::steady_clock::time_point g_SessionStartTime;
+int g_SessionDurationMinutes = 0;
 
 SERVICE_STATUS_HANDLE g_hServiceStatus = NULL;
 SERVICE_STATUS g_ServiceStatus;
 std::thread g_ServiceThread;
+
+// ─── Lock screen globals ───
+HWND g_hLockWindow = NULL;
+HHOOK g_hKeyboardHook = NULL;
 
 // ============================================================
 // HELPER FUNCTIONS
@@ -541,14 +551,9 @@ std::string GetHostname()
 
 std::string GetLocalIP()
 {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-        return "127.0.0.1";
-
     char hostname[256];
     if (gethostname(hostname, sizeof(hostname)) != 0)
     {
-        WSACleanup();
         return "127.0.0.1";
     }
 
@@ -561,7 +566,6 @@ std::string GetLocalIP()
 
     if (getaddrinfo(hostname, nullptr, &hints, &result) != 0)
     {
-        WSACleanup();
         return "127.0.0.1";
     }
 
@@ -591,7 +595,6 @@ std::string GetLocalIP()
     }
 
     freeaddrinfo(result);
-    WSACleanup();
     return bestIP;
 }
 
@@ -948,6 +951,314 @@ std::string CollectTelemetry()
 }
 
 // ============================================================
+// 🔒 OS LOCKDOWN (KIOSK MODE) - CORRECTED
+// ============================================================
+
+const char *POLICY_PATH = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System";
+const char *EXPLORER_PATH = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
+
+// Forward declaration
+LRESULT CALLBACK LockWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+// ─── Registry Lockdown ───
+void EnableRegistryLockdown()
+{
+    LogMessage("[LOCKDOWN-REG] Starting registry lockdown...");
+
+    HKEY hKey;
+    DWORD one = 1;
+
+    LogMessage("[LOCKDOWN-REG] Step 1: Disabling Task Manager");
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, POLICY_PATH, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+    {
+        RegSetValueExA(hKey, "DisableTaskMgr", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
+        RegCloseKey(hKey);
+    }
+    LogMessage("[LOCKDOWN-REG] Step 1 done");
+
+    LogMessage("[LOCKDOWN-REG] Step 2: Disabling Ctrl+Alt+Del options");
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, POLICY_PATH, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+    {
+        RegSetValueExA(hKey, "DisableLockWorkstation", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
+        RegSetValueExA(hKey, "DisableChangePassword", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
+        RegCloseKey(hKey);
+    }
+    LogMessage("[LOCKDOWN-REG] Step 2 done");
+
+    LogMessage("[LOCKDOWN-REG] Step 3: Disabling Win keys");
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, EXPLORER_PATH, 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+    {
+        RegSetValueExA(hKey, "NoWinKeys", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
+        RegCloseKey(hKey);
+    }
+    LogMessage("[LOCKDOWN-REG] Step 3 done");
+
+    LogMessage("[LOCKDOWN-REG] Step 4: Broadcasting settings change...");
+    SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                        (LPARAM) "Software\\Microsoft\\Windows",
+                        SMTO_ABORTIFHUNG, 500, NULL);
+    LogMessage("[LOCKDOWN-REG] Step 4 done");
+
+    LogMessage("[LOCKDOWN] Registry lockdown ENABLED");
+}
+void DisableRegistryLockdown()
+{
+    HKEY hKey;
+
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, POLICY_PATH, 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS)
+    {
+        RegDeleteValueA(hKey, "DisableTaskMgr");
+        RegDeleteValueA(hKey, "DisableLockWorkstation");
+        RegDeleteValueA(hKey, "DisableChangePassword");
+        RegCloseKey(hKey);
+    }
+
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, EXPLORER_PATH, 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS)
+    {
+        RegDeleteValueA(hKey, "NoWinKeys");
+        RegCloseKey(hKey);
+    }
+
+    SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                        (LPARAM) "Software\\Microsoft\\Windows",
+                        SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 500, NULL);
+
+    LogMessage("[LOCKDOWN] Registry lockdown DISABLED");
+}
+
+// ─── Keyboard Hook ───
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && g_IsLocked)
+    {
+        KBDLLHOOKSTRUCT *pKey = (KBDLLHOOKSTRUCT *)lParam;
+
+        if (pKey->vkCode == VK_F4 && (GetAsyncKeyState(VK_MENU) & 0x8000))
+            return 1;
+        if (pKey->vkCode == VK_TAB && (GetAsyncKeyState(VK_MENU) & 0x8000))
+            return 1;
+        if (pKey->vkCode == VK_LWIN || pKey->vkCode == VK_RWIN)
+            return 1;
+        if (pKey->vkCode == VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL) & 0x8000))
+            return 1;
+        if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000))
+        {
+            if (pKey->vkCode == 'D' || pKey->vkCode == 'L' || pKey->vkCode == 'R')
+                return 1;
+        }
+    }
+    return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
+}
+
+// ─── Lock Window Procedure ───
+LRESULT CALLBACK LockWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CLOSE:
+        LogMessage("[LOCKDOWN] WM_CLOSE received");
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        LogMessage("[LOCKDOWN] WM_DESTROY received");
+        PostQuitMessage(0);
+        return 0;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        RECT rect;
+        GetClientRect(hwnd, &rect);
+
+        HBRUSH brush = CreateSolidBrush(RGB(10, 10, 26));
+        FillRect(hdc, &rect, brush);
+        DeleteObject(brush);
+
+        SetTextColor(hdc, RGB(233, 69, 96));
+        SetBkMode(hdc, TRANSPARENT);
+        HFONT hFont = CreateFontA(80, 0, 0, 0, FW_BOLD, 0, 0, 0, 0, 0, 0, 0, 0, "Arial");
+        SelectObject(hdc, hFont);
+        DrawTextA(hdc, "PC VERROUILLE", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        RECT subRect = rect;
+        subRect.top += 140;
+        SetTextColor(hdc, RGB(200, 200, 200));
+        HFONT hFont2 = CreateFontA(24, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, "Arial");
+        SelectObject(hdc, hFont2);
+        DrawTextA(hdc, "Contactez l'administrateur pour debloquer", -1, &subRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
+
+        RECT userRect = rect;
+        userRect.top += 200;
+        SetTextColor(hdc, RGB(150, 150, 150));
+        HFONT hFont3 = CreateFontA(18, 0, 0, 0, FW_NORMAL, 0, 0, 0, 0, 0, 0, 0, 0, "Arial");
+        SelectObject(hdc, hFont3);
+        std::string userLine = "Joueur: " + (g_SessionUser.empty() ? std::string("Inconnu") : g_SessionUser);
+        DrawTextA(hdc, userLine.c_str(), -1, &userRect, DT_CENTER | DT_TOP | DT_SINGLELINE);
+
+        DeleteObject(hFont);
+        DeleteObject(hFont2);
+        DeleteObject(hFont3);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// ─── Lock Window Thread (with message loop) ───
+DWORD WINAPI LockWindowThread(LPVOID lpParam)
+{
+    LogMessage("[LOCKDOWN] Lock thread started");
+
+    // Register window class
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = LockWndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = "GamingLockScreen";
+    wc.hbrBackground = (HBRUSH)CreateSolidBrush(RGB(10, 10, 26));
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+
+    if (!RegisterClassA(&wc))
+    {
+        DWORD err = GetLastError();
+        if (err != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            LogMessage("[LOCKDOWN] ❌ RegisterClassA failed: " + std::to_string(err));
+            return 1;
+        }
+    }
+
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+    g_hLockWindow = CreateWindowExA(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        "GamingLockScreen", "Locked",
+        WS_POPUP | WS_VISIBLE,
+        0, 0, screenW, screenH,
+        NULL, NULL, GetModuleHandle(NULL), NULL);
+
+    if (!g_hLockWindow)
+    {
+        LogMessage("[LOCKDOWN] ❌ CreateWindowExA failed: " + std::to_string(GetLastError()));
+        return 1;
+    }
+
+    LogMessage("[LOCKDOWN] Window created: " + std::to_string((intptr_t)g_hLockWindow));
+
+    SetWindowPos(g_hLockWindow, HWND_TOPMOST, 0, 0, screenW, screenH, SWP_SHOWWINDOW);
+    ShowWindow(g_hLockWindow, SW_SHOW);
+    SetForegroundWindow(g_hLockWindow);
+    SetFocus(g_hLockWindow);
+    UpdateWindow(g_hLockWindow);
+
+    LogMessage("[LOCKDOWN] Window shown, entering message loop");
+
+    // ─── CRITICAL: Message loop keeps the window alive ───
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    LogMessage("[LOCKDOWN] Message loop exited");
+
+    g_hLockWindow = NULL;
+    UnregisterClassA("GamingLockScreen", GetModuleHandle(NULL));
+    return 0;
+}
+
+// ─── Apply / Remove Lock ───
+void ApplyLock()
+{
+    if (g_IsLocked)
+    {
+        LogMessage("[LOCKDOWN] Already locked, skipping");
+        return;
+    }
+
+    LogMessage("[LOCKDOWN] Applying OS lockdown...");
+
+    // 👇 Run the registry lockdown in the BACKGROUND so it doesn't block the window
+    std::thread(EnableRegistryLockdown).detach();
+
+    if (!g_hKeyboardHook)
+    {
+        g_hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+        if (!g_hKeyboardHook)
+        {
+            LogMessage("[LOCKDOWN] ⚠️ Keyboard hook failed: " + std::to_string(GetLastError()));
+        }
+        else
+        {
+            LogMessage("[LOCKDOWN] Keyboard hook installed");
+        }
+    }
+
+    g_IsLocked = true;
+    g_Status = "locked";
+
+    // Launch the lock window thread (with message loop)
+    HANDLE hThread = CreateThread(NULL, 0, LockWindowThread, NULL, 0, NULL);
+    if (hThread)
+    {
+        CloseHandle(hThread);
+        LogMessage("[LOCKDOWN] ✅ OS lockdown applied");
+    }
+    else
+    {
+        LogMessage("[LOCKDOWN] ❌ Failed to create lock thread");
+    }
+}
+
+void RemoveLock()
+{
+    if (!g_IsLocked)
+        return;
+
+    LogMessage("[LOCKDOWN] Removing lockdown...");
+
+    if (g_hKeyboardHook)
+    {
+        UnhookWindowsHookEx(g_hKeyboardHook);
+        g_hKeyboardHook = NULL;
+        LogMessage("[LOCKDOWN] Keyboard hook removed");
+    }
+
+    if (g_hLockWindow)
+    {
+        LogMessage("[LOCKDOWN] Posting WM_CLOSE to lock window");
+        PostMessageA(g_hLockWindow, WM_CLOSE, 0, 0);
+
+        for (int i = 0; i < 20; i++)
+        {
+            Sleep(50);
+            if (!g_hLockWindow)
+                break;
+        }
+
+        if (g_hLockWindow)
+        {
+            LogMessage("[LOCKDOWN] Forcing window destruction");
+            DestroyWindow(g_hLockWindow);
+            g_hLockWindow = NULL;
+        }
+    }
+
+    std::thread(DisableRegistryLockdown).detach();
+
+    g_IsLocked = false;
+    g_Status = "online";
+
+    LogMessage("[LOCKDOWN] ✅ Lockdown removed");
+}
+
+// ============================================================
 // NETWORK FUNCTIONS
 // ============================================================
 
@@ -956,18 +1267,10 @@ std::string DiscoverServer(int timeout_seconds = 20)
     LogMessage("[DISCOVERY] Searching for server on the network...");
     LogMessage("[DISCOVERY] Listening on port " + std::to_string(DISCOVERY_PORT));
 
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        LogMessage("[DISCOVERY] WSAStartup failed");
-        return "";
-    }
-
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET)
     {
         LogMessage("[DISCOVERY] Socket creation failed");
-        WSACleanup();
         return "";
     }
 
@@ -983,7 +1286,6 @@ std::string DiscoverServer(int timeout_seconds = 20)
     {
         LogMessage("[DISCOVERY] Failed to bind to port " + std::to_string(DISCOVERY_PORT));
         closesocket(sock);
-        WSACleanup();
         return "";
     }
 
@@ -1014,7 +1316,6 @@ std::string DiscoverServer(int timeout_seconds = 20)
                     ip = ip.substr(0, colonPos);
                 LogMessage("[DISCOVERY] ✅ Server found at: " + ip);
                 closesocket(sock);
-                WSACleanup();
                 return ip;
             }
         }
@@ -1022,7 +1323,6 @@ std::string DiscoverServer(int timeout_seconds = 20)
 
     LogMessage("[DISCOVERY] ❌ Server not found (timeout)");
     closesocket(sock);
-    WSACleanup();
     return "";
 }
 
@@ -1052,18 +1352,10 @@ bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoin
         port = std::stoi(host.substr(colonPos + 1));
     }
 
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        LogMessage("[TELEMETRY] WSAStartup failed");
-        return false;
-    }
-
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET)
     {
         LogMessage("[TELEMETRY] Socket creation failed");
-        WSACleanup();
         return false;
     }
 
@@ -1076,7 +1368,6 @@ bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoin
     {
         LogMessage("[TELEMETRY] Connection failed: " + std::to_string(WSAGetLastError()));
         closesocket(sock);
-        WSACleanup();
         return false;
     }
 
@@ -1096,14 +1387,12 @@ bool SendTelemetryToEndpoint(const std::string &data, const std::string &endpoin
     {
         LogMessage("[TELEMETRY] Send failed: " + std::to_string(WSAGetLastError()));
         closesocket(sock);
-        WSACleanup();
         return false;
     }
 
     char buffer[1024];
     recv(sock, buffer, sizeof(buffer) - 1, 0);
     closesocket(sock);
-    WSACleanup();
     return true;
 }
 
@@ -1242,20 +1531,14 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
 
     if (command == "LOCK")
     {
-        LogMessage("[EXEC] Attempting to lock workstation...");
-        if (LockWorkStation())
-        {
-            g_Status = "locked";
-            LogMessage("[EXEC] ✅ Screen locked successfully");
-        }
-        else
-        {
-            LogMessage("[EXEC] ❌ Failed to lock screen. Error: " + std::to_string(GetLastError()));
-            LogMessage("[EXEC] 🔄 Trying alternative lock method...");
-            system("rundll32.exe user32.dll,LockWorkStation");
-            Sleep(500);
-            g_Status = "locked";
-        }
+        // OS LOCKDOWN (kiosk window + registry + keyboard hook)
+        std::thread(ApplyLock).detach();
+        LogMessage("[EXEC] ✅ OS Lockdown initiated");
+    }
+    else if (command == "UNLOCK")
+    {
+        std::thread(RemoveLock).detach();
+        LogMessage("[EXEC] ✅ Unlock initiated");
     }
     else if (command == "SHUTDOWN")
     {
@@ -1337,13 +1620,26 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
     {
         g_SessionUser = parameter.empty() ? "Player" : parameter;
         g_Status = "in_session";
-        LogMessage("[EXEC] ✅ Session started for: " + g_SessionUser);
+        g_SessionActive = true;
+        g_SessionStartTime = std::chrono::steady_clock::now();
+        // Default: 60 min (server can send duration via parameter later)
+        g_SessionDurationMinutes = 60;
+
+        LogMessage("[EXEC] ✅ Session started for: " + g_SessionUser +
+                   " (duration: " + std::to_string(g_SessionDurationMinutes) + " min)");
     }
     else if (command == "END_SESSION")
     {
         LogMessage("[EXEC] Ending session...");
         g_SessionUser = "";
         g_Status = "online";
+        g_SessionActive = false;
+
+        if (g_IsLocked)
+        {
+            std::thread(RemoveLock).detach();
+        }
+
         LogMessage("[EXEC] ✅ Session ended");
     }
     else if (command == "LAUNCH_GAME")
@@ -1364,8 +1660,7 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
 
             std::vector<std::string> searchPaths = {
                 "C:\\Program Files\\",
-                "C:\\Program Files (x86)\\",
-                "C:\\Users\\slims\\Downloads\\",
+                "C:\\Program Files (x86)\\", "C:\\Users\\slims\\Downloads\\",
                 "C:\\Users\\slims\\OneDrive\\Bureau\\",
                 "C:\\Program Files\\Steam\\steamapps\\common\\",
                 "C:\\Program Files (x86)\\Steam\\steamapps\\common\\"};
@@ -1466,14 +1761,9 @@ bool PollForCommands()
     std::string macAddress = GetMACAddress();
     std::string path = "/api/commands/" + macAddress;
 
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-        return false;
-
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET)
     {
-        WSACleanup();
         return false;
     }
 
@@ -1485,7 +1775,6 @@ bool PollForCommands()
     if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR)
     {
         closesocket(sock);
-        WSACleanup();
         return false;
     }
 
@@ -1509,7 +1798,6 @@ bool PollForCommands()
     }
 
     closesocket(sock);
-    WSACleanup();
 
     bool hasCommands = false;
     if (!fullResponse.empty())
@@ -1593,34 +1881,15 @@ bool PollForCommands()
 
                     if (!action.empty())
                     {
-                        if (action == "LAUNCH_GAME")
+                        if (action == "LAUNCH_GAME" ||
+                            action == "LOCK" ||
+                            action == "UNLOCK" ||
+                            action == "SHUTDOWN" ||
+                            action == "RESTART" ||
+                            action == "START_SESSION" ||
+                            action == "END_SESSION")
                         {
                             ExecuteCommand(action, parameter);
-                            hasCommands = true;
-                        }
-                        else if (action == "LOCK")
-                        {
-                            ExecuteCommand(action, "");
-                            hasCommands = true;
-                        }
-                        else if (action == "SHUTDOWN")
-                        {
-                            ExecuteCommand(action, "");
-                            hasCommands = true;
-                        }
-                        else if (action == "RESTART")
-                        {
-                            ExecuteCommand(action, "");
-                            hasCommands = true;
-                        }
-                        else if (action == "START_SESSION")
-                        {
-                            ExecuteCommand(action, parameter.empty() ? "Player" : parameter);
-                            hasCommands = true;
-                        }
-                        else if (action == "END_SESSION")
-                        {
-                            ExecuteCommand(action, "");
                             hasCommands = true;
                         }
                     }
@@ -1633,12 +1902,11 @@ bool PollForCommands()
 }
 
 // ============================================================
-// DEVICE MONITORING THREAD (NEW - uses device_monitor.h)
+// DEVICE MONITORING THREAD
 // ============================================================
 
 void DeviceMonitoringThread()
 {
-    // Initial snapshot of input devices (keyboards + mice)
     std::vector<InputDevice> previousDevices = GetInputDevices();
 
     LogMessage("[DEVICE] Monitoring input devices (keyboard + mouse)...");
@@ -1656,7 +1924,6 @@ void DeviceMonitoringThread()
 
         std::vector<InputDevice> currentDevices = GetInputDevices();
 
-        // Detect removals
         std::vector<InputDevice> removed = DiffInputDevices(previousDevices, currentDevices);
 
         if (!removed.empty())
@@ -1666,7 +1933,6 @@ void DeviceMonitoringThread()
                 LogMessage("[DEVICE] ⚠️ REMOVED: " + dev.deviceClass + " — " + dev.name);
             }
 
-            // Send alert to server
             if (!SERVER_URL.empty())
             {
                 std::string cpuName = GetCPUName();
@@ -1703,7 +1969,6 @@ void DeviceMonitoringThread()
                 SendTelemetryToEndpoint(json.str(), "/api/heartbeat");
             }
 
-            // Log newly connected devices too
             std::vector<InputDevice> added = DiffInputDevices(currentDevices, previousDevices);
             for (const auto &dev : added)
             {
@@ -1725,7 +1990,6 @@ void AgentMainLoop()
 {
     LogMessage("Agent main loop started");
 
-    // Start device monitoring thread
     std::thread deviceThread(DeviceMonitoringThread);
 
     auto lastCommandPoll = std::chrono::steady_clock::now();
@@ -1736,21 +2000,47 @@ void AgentMainLoop()
     {
         auto now = std::chrono::steady_clock::now();
 
-        // Send telemetry - every 2 seconds
+        // ─── Session time enforcement ───
+        if (g_SessionActive)
+        {
+            auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
+                               now - g_SessionStartTime)
+                               .count();
+
+            if (elapsed >= g_SessionDurationMinutes)
+            {
+                LogMessage("[SESSION] ⏰ Time expired — locking PC");
+
+                std::string expiredUser = g_SessionUser;
+                int expiredDuration = g_SessionDurationMinutes;
+
+                g_SessionActive = false;
+                g_SessionUser = "";
+                g_SessionDurationMinutes = 0;
+
+                ExecuteCommand("LOCK", "");
+
+                std::stringstream json;
+                json << "{\"pc_id\":\"" << GetMACAddress() << "\","
+                     << "\"event\":\"session_expired\","
+                     << "\"user\":\"" << expiredUser << "\","
+                     << "\"duration_minutes\":" << expiredDuration << "}";
+                SendTelemetryToEndpoint(json.str(), "/api/session/expired");
+            }
+        }
+
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTelemetry).count() >= TELEMETRY_INTERVAL_MS)
         {
             SendTelemetry();
             lastTelemetry = now;
         }
 
-        // Scan for installed games - every 30 seconds
         if (std::chrono::duration_cast<std::chrono::seconds>(now - lastGameScan).count() >= 30)
         {
             SendInstalledGames();
             lastGameScan = now;
         }
 
-        // Poll commands - every 2 seconds
         if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCommandPoll).count() >= COMMAND_POLL_INTERVAL_MS)
         {
             PollForCommands();
@@ -1762,6 +2052,11 @@ void AgentMainLoop()
 
     if (deviceThread.joinable())
         deviceThread.join();
+
+    if (g_IsLocked)
+    {
+        RemoveLock();
+    }
 
     LogMessage("Agent main loop stopped");
 }
@@ -1848,6 +2143,9 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
 
     if (g_ServiceThread.joinable())
         g_ServiceThread.join();
+
+    if (g_IsLocked)
+        RemoveLock();
 
     WSACleanup();
 
@@ -2061,6 +2359,7 @@ int main()
         return 0;
     }
 
+    // 👇 WSAStartup ONCE at startup
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
@@ -2070,7 +2369,6 @@ int main()
 
     g_Hostname = GetHostname();
 
-    // ─── Show input devices at startup ───
     auto devices = GetInputDevices();
     std::cout << "===========================================" << std::endl;
     std::cout << "   INPUT DEVICES DETECTED" << std::endl;
@@ -2117,6 +2415,9 @@ int main()
 
     if (agentThread.joinable())
         agentThread.join();
+
+    if (g_IsLocked)
+        RemoveLock();
 
     WSACleanup();
 
