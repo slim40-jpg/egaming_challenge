@@ -69,13 +69,16 @@ export const cloud = {
   cancelReservation: (id: number) =>
     cloudApi.post(`/api/reservations/${id}/cancel`),
 
-  // 👇 NEW: Cloud Wallet Endpoints (Player-facing)
   getWallet: () => cloudApi.get('/api/wallet'),
   
   rechargeWallet: (amount: number) => 
     cloudApi.post('/api/wallet/recharge', { amount }),
   
   getTransactions: () => cloudApi.get('/api/wallet/transactions'),
+  adminListUsers: () => cloudApi.get('/api/admin/users'),
+  adminGetUser: (userId: number) => cloudApi.get(`/api/admin/users/${userId}`),
+  adminTopupUser: (userId: number, amount: number) => 
+    cloudApi.post(`/api/admin/users/${userId}/topup`, { amount }),
 };
 
 // ─── Local calls (admin only) ────────────────────────────

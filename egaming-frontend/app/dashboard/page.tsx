@@ -110,7 +110,15 @@ export default function Dashboard() {
             >
               👤 Mon Profil
             </Link>
-            
+                        {/* Admin: Users Management */}
+            {isAdmin && (
+              <Link
+                href="/admin/users"
+                className="px-3 py-1.5 bg-[#1a1a2e] border border-[#2a2a4a] rounded-lg text-sm text-white hover:border-[#e94560] transition"
+              >
+                👥 Gestion des utilisateurs
+              </Link>
+            )}
             <Link 
               href="/reservations" 
               className="px-3 py-1.5 bg-[#1a1a2e] border border-[#2a2a4a] rounded-lg text-sm text-white hover:border-[#e94560] transition"

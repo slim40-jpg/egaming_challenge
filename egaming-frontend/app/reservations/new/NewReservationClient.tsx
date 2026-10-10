@@ -230,7 +230,7 @@ export default function NewReservationPage() {
             <div className="bg-[#0f0f23] rounded-lg p-4">
               <div className="flex justify-between text-sm">
                 <span className="text-gray-500">Tarif</span>
-                <span className="text-yellow-400 font-bold">0.1 dt / min</span>
+                <span className="text-yellow-400 font-bold">0.10 dt / min</span>
               </div>
               <div className="flex justify-between text-sm mt-1">
                 <span className="text-gray-500">Durée</span>
@@ -241,7 +241,7 @@ export default function NewReservationPage() {
               <div className="flex justify-between text-sm mt-1">
                 <span className="text-gray-500">Total estimé</span>
                 <span className="text-[#e94560] font-bold">
-                  {durationMinutes > 0 ? `${estimatedCost} €` : '—'}
+                  {durationMinutes > 0 ? `${estimatedCost} dt` : '—'}
                 </span>
               </div>
               {durationMinutes > 0 && durationMinutes < 30 && (

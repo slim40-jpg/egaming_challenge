@@ -433,7 +433,67 @@ def sync_reservations(center_id):
         'reservations': [r.to_dict() for r in rows],
     })
 
+# ─────────────────────────────────────────────────────────────
+# Admin Endpoints (Users Management)
+# ─────────────────────────────────────────────────────────────
 
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required   # 👈 Only admins can access this
+def admin_list_users():
+    """Admin fetches all users with their wallet balances."""
+    users = User.query.order_by(User.created_at.desc()).all()
+    return jsonify({
+        'status': 'ok',
+        'users': [u.to_dict() for u in users]  # to_dict() already includes wallet_balance
+    })
+
+
+@app.route('/api/admin/users/<int:user_id>', methods=['GET'])
+@admin_required
+def admin_get_user(user_id):
+    """Admin fetches a specific user's details + transactions."""
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    txs = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.timestamp.desc()).all()
+    
+    return jsonify({
+        'status': 'ok',
+        'user': user.to_dict(),
+        'transactions': [tx.to_dict() for tx in txs]
+    })
+
+
+@app.route('/api/admin/users/<int:user_id>/topup', methods=['POST'])
+@admin_required
+def admin_topup_user(user_id):
+    """Admin can manually add funds to a user's wallet (e.g., cash payment at the counter)."""
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    data = request.get_json() or {}
+    amount = data.get('amount')
+    
+    if not amount or not isinstance(amount, (int, float)) or amount <= 0:
+        return jsonify({'error': 'Valid positive amount is required'}), 400
+
+    user.wallet_balance += amount
+    tx = Transaction(
+        user_id=user.id,
+        amount=amount,
+        type='recharge',
+        description=f'Manual cash top-up by admin'
+    )
+    db.session.add(tx)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'message': 'Wallet topped up',
+        'new_balance': user.wallet_balance
+    })
 # ─────────────────────────────────────────────────────────────
 # Bootstrap
 # ─────────────────────────────────────────────────────────────

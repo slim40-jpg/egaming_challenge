@@ -7,7 +7,16 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import Link from 'next/link';
 import type { PC, Game } from '@/lib/types';
+import { cloud } from '@/lib/api'; // 👈 Import cloud API for user fetching
 import React from 'react';
+
+type CloudUser = {
+  id: number;
+  username: string;
+  email: string | null;
+  role: string;
+  wallet_balance: number;
+};
 
 export default function PCDetail({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
@@ -18,17 +27,19 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   const [pc, setPC] = useState<PC | null>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [loading, setLoading] = useState(true);
-  const [playerName, setPlayerName] = useState('Joueur');
   const [sessionTime, setSessionTime] = useState('00:00');
   const [sessionCost, setSessionCost] = useState(0);
   const [walletBalance, setWalletBalance] = useState(0);
   const [topupAmount, setTopupAmount] = useState(5);
   const [isAdmin, setIsAdmin] = useState(false);
   const [refreshingGames, setRefreshingGames] = useState(false);
+  
+  // 👇 NEW: State for user selection
+  const [users, setUsers] = useState<CloudUser[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string>('');
+  
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const refreshInterval = useRef<NodeJS.Timeout | null>(null);
-
-  // app/pc/[id]/page.tsx - Modifier le useEffect
 
   useEffect(() => {
     console.log('🔍 Params:', params);
@@ -50,9 +61,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       return;
     }
 
-  // ✅ VÉRIFIER LE USERNAME (admin OU cloud_username)
-    const user = localStorage.getItem('username') || 
-                   localStorage.getItem('cloud_user') || '';
+    // ✅ VÉRIFIER LE USERNAME (admin OU cloud_username)
     const cloud_user_json = JSON.parse(localStorage.getItem('cloud_user') || '{}');
     const isAdminUser = cloud_user_json.username === 'admin';
     console.log('🔑 Username:', cloud_user_json.username);
@@ -70,11 +79,12 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
     fetchPCData();
     fetchGames();
     fetchWallet();
+    loadUsers(); // 👈 Load users on mount
   
     refreshInterval.current = setInterval(() => {
       fetchPCData();
       fetchGamesSilently();
-      fetchWallet();
+      // Note: We don't auto-refresh users list to avoid disrupting selection
     }, 5000);
   
     return () => {
@@ -82,6 +92,32 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       if (timerInterval.current) clearInterval(timerInterval.current);
     };
   }, [pcId]);
+
+  // 👇 NEW: Fetch all users from Cloud
+  const loadUsers = async () => {
+    try {
+      const res = await cloud.adminListUsers();
+      const playerUsers = (res.data.users || []).filter((u: CloudUser) => u.role === 'player');
+      setUsers(playerUsers);
+      // Auto-select the first player if none selected
+      if (playerUsers.length > 0 && !selectedUserId) {
+        setSelectedUserId(playerUsers[0].id.toString());
+      }
+    } catch (e: any) {
+      console.error('Failed to load users:', e);
+      toast.error('Impossible de charger la liste des joueurs');
+    }
+  };
+
+  // 👇 NEW: Update wallet display when user selection changes
+  useEffect(() => {
+    if (selectedUserId) {
+      const user = users.find(u => u.id === parseInt(selectedUserId));
+      if (user) {
+        setWalletBalance(user.wallet_balance);
+      }
+    }
+  }, [selectedUserId, users]);
 
   const fetchPCData = async () => {
     if (!pcId || pcId === 'undefined') {
@@ -245,6 +281,18 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       return;
     }
 
+    // 👇 NEW: Validate user selection
+    const user = users.find(u => u.id === parseInt(selectedUserId));
+    if (!user) {
+      toast.error('Veuillez sélectionner un joueur');
+      return;
+    }
+
+    if (user.wallet_balance <= 0) {
+      toast.error(`Solde insuffisant pour ${user.username} (${user.wallet_balance.toFixed(2)} TND)`);
+      return;
+    }
+
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
@@ -256,15 +304,14 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         },
         body: JSON.stringify({
           pc_id: pcId,
-          user_name: playerName,
+          user_name: user.username, // 👈 Use selected user's username
         }),
       });
       
       const data = await response.json();
       if (data.status === 'ok') {
-        toast.success(`Session démarrée pour ${playerName}`);
+        toast.success(`Session démarrée pour ${user.username}`);
         fetchPCData();
-        fetchWallet();
       } else {
         toast.error(data.message || 'Erreur');
       }
@@ -301,7 +348,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
           timerInterval.current = null;
         }
         fetchPCData();
-        fetchWallet();
+        loadUsers(); // 👈 Refresh user list to update balances after deduction
       } else {
         toast.error(data.message || 'Erreur');
       }
@@ -343,6 +390,8 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   };
 
   const handleTopup = async () => {
+    // Note: This is the LOCAL wallet topup (for the admin's own wallet)
+    // For player topups, use the /admin/users page
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
@@ -454,8 +503,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   const isInSession = pc.in_session;
   const gameName = pc.game && pc.game !== 'none' ? pc.game : 'Aucun jeu';
 
-  const gamesWithPaths = games.filter(g => g.executable_path && g.executable_path !== '');
-  const gamesWithoutPaths = games.filter(g => !g.executable_path || g.executable_path === '');
+  const selectedUser = users.find(u => u.id === parseInt(selectedUserId));
 
   return (
     <div className="min-h-screen bg-[#0a0a1a] p-6">
@@ -486,10 +534,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
               <div>
                 <span className="text-gray-500">Jeux: </span>
                 <span className="text-white font-bold">{games.length}</span>
-              </div>
-              <div>
-                <span className="text-gray-500">Wallet: </span>
-                <span className="text-yellow-400 font-bold">{walletBalance || 0}dt</span>
               </div>
             </div>
           </div>
@@ -617,30 +661,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
 
           {/* Right: Controls */}
           <div className="space-y-6">
-            {/* Wallet */}
-            <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
-              <h2 className="text-lg font-semibold text-[#e94560] mb-4">💰 Portefeuille</h2>
-              <div className="text-center mb-4">
-                <div className="text-3xl font-bold text-yellow-400">{walletBalance || 0}dt</div>
-                <div className="text-xs text-gray-500">Solde disponible</div>
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  value={topupAmount}
-                  onChange={(e) => setTopupAmount(parseInt(e.target.value) || 0)}
-                  className="flex-1 bg-[#0f0f23] border border-[#2a2a4a] rounded-lg px-3 py-2 text-white focus:border-[#e94560] focus:outline-none"
-                  min="1"
-                />
-                <button
-                  onClick={handleTopup}
-                  className="bg-[#e94560] text-white px-4 py-2 rounded-lg hover:bg-[#c73652] transition"
-                >
-                  + Recharger
-                </button>
-              </div>
-            </div>
-
             {/* Session Controls */}
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
               <h2 className="text-lg font-semibold text-[#e94560] mb-4">🎮 Session</h2>
@@ -678,25 +698,45 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                     <div className="text-yellow-400 text-sm font-semibold">
                       💰 0.10dt / minute
                     </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      Solde: {walletBalance || 0}dt   
-                    </div>
-                    {walletBalance < 1 && (
-                      <div className="text-xs text-red-400 mt-1">
-                        ⚠️ Solde insuffisant (min 1dt)
-                      </div>
-                    )}
                   </div>
-                  <input
-                    type="text"
-                    value={playerName}
-                    onChange={(e) => setPlayerName(e.target.value)}
-                    placeholder="Nom du joueur"
-                    className="w-full bg-[#0f0f23] border border-[#2a2a4a] rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:border-[#e94560] focus:outline-none mb-3"
-                  />
+
+                  {/* 👇 NEW: User Selection Dropdown */}
+                  <div className="mb-4">
+                    <label className="block text-xs text-gray-400 mb-1">Sélectionner le joueur</label>
+                    <select
+                      value={selectedUserId}
+                      onChange={(e) => setSelectedUserId(e.target.value)}
+                      className="w-full bg-[#0f0f23] border border-[#2a2a4a] rounded-lg px-4 py-2 text-white focus:border-[#e94560] focus:outline-none"
+                    >
+                      <option value="">-- Choisir un joueur --</option>
+                      {users.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.username} — {u.wallet_balance.toFixed(2)} TND
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Selected User Balance Display */}
+                  {selectedUser && (
+                    <div className="bg-[#0f0f23] rounded-lg p-3 mb-4 text-center border border-[#2a2a4a]">
+                      <div className="text-xs text-gray-500">Solde de {selectedUser.username}</div>
+                      <div className={`text-xl font-bold ${
+                        selectedUser.wallet_balance > 0 ? 'text-yellow-400' : 'text-red-400'
+                      }`}>
+                        {selectedUser.wallet_balance.toFixed(2)} TND
+                      </div>
+                      {selectedUser.wallet_balance < 1 && (
+                        <div className="text-xs text-red-400 mt-1">
+                          ⚠️ Solde insuffisant (min 1 TND)
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <button
                     onClick={handleStartSession}
-                    disabled={walletBalance < 1}
+                    disabled={!selectedUser || (selectedUser && selectedUser.wallet_balance < 1)}
                     className="w-full bg-green-500 text-white py-2 rounded-lg hover:bg-green-600 transition font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     ▶ Démarrer la session
