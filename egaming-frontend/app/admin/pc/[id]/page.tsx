@@ -38,6 +38,12 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   const [users, setUsers] = useState<CloudUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
 
+  // 👇 NEW: Track previous device state to trigger alerts
+  const [prevDeviceState, setPrevDeviceState] = useState<{
+    has_keyboard: boolean;
+    has_mouse: boolean;
+  } | null>(null);
+
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const refreshInterval = useRef<NodeJS.Timeout | null>(null);
 
@@ -61,7 +67,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       return;
     }
 
-    // ✅ VÉRIFIER LE USERNAME (admin OU cloud_username)
+    // ✅ VÉRIFIER LE USERNAME
     const cloud_user_json = JSON.parse(localStorage.getItem('cloud_user') || '{}');
     const isAdminUser = cloud_user_json.username === 'admin';
     console.log('🔑 Username:', cloud_user_json.username);
@@ -150,6 +156,33 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
 
       const data = await response.json();
       console.log('✅ PC Data received:', data);
+
+      // 👇 NEW: Trigger toast alerts when device state changes
+      if (prevDeviceState) {
+        // Keyboard just got disconnected
+        if (prevDeviceState.has_keyboard && data.has_keyboard === false) {
+          toast.error('🚨 Clavier débranché !', { duration: 6000, icon: '⌨️' });
+        }
+        // Keyboard just got reconnected
+        if (!prevDeviceState.has_keyboard && data.has_keyboard === true) {
+          toast.success('✅ Clavier reconnecté', { duration: 3000 });
+        }
+        // Mouse just got disconnected
+        if (prevDeviceState.has_mouse && data.has_mouse === false) {
+          toast.error('🚨 Souris débranchée !', { duration: 6000, icon: '🖱️' });
+        }
+        // Mouse just got reconnected
+        if (!prevDeviceState.has_mouse && data.has_mouse === true) {
+          toast.success('✅ Souris reconnectée', { duration: 3000 });
+        }
+      }
+
+      // Save current state for next comparison
+      setPrevDeviceState({
+        has_keyboard: data.has_keyboard ?? true,
+        has_mouse: data.has_mouse ?? true,
+      });
+
       setPC(data);
 
       if (data.in_session && data.session) {
@@ -197,19 +230,14 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   };
 
   const fetchGames = async () => {
-    if (!pcId || pcId === 'undefined') {
-      console.error('❌ Cannot fetch games: invalid ID');
-      return;
-    }
+    if (!pcId || pcId === 'undefined') return;
 
     setRefreshingGames(true);
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
       const response = await fetch(`${apiUrl}/api/pc/${pcId}/games`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await response.json();
 
@@ -220,7 +248,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
           shortcut_path: game.shortcut_path || game.shortcut || '',
         }));
         setGames(gamesWithPaths);
-        console.log('🎮 Games loaded:', gamesWithPaths.length);
       }
     } catch (error) {
       console.error('Failed to fetch games:', error);
@@ -231,17 +258,13 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
 
   const fetchGamesSilently = async () => {
     if (!pcId || pcId === 'undefined') return;
-
     try {
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
       const response = await fetch(`${apiUrl}/api/pc/${pcId}/games`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await response.json();
-
       if (data.status === 'ok') {
         const gamesWithPaths = (data.games || []).map((game: any) => ({
           ...game,
@@ -250,9 +273,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         }));
         setGames(gamesWithPaths);
       }
-    } catch (error) {
-      // Silently fail for background refresh
-    }
+    } catch {}
   };
 
   const fetchWallet = async () => {
@@ -260,9 +281,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
       const token = localStorage.getItem('access_token');
       const apiUrl = process.env.NEXT_PUBLIC_LOCAL_API_URL || 'http://localhost:8003';
       const response = await fetch(`${apiUrl}/api/wallet`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await response.json();
       if (data.status === 'ok') {
@@ -386,7 +405,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
     }
   };
 
-  // 👇 NEW: Dedicated UNLOCK handler
+  // 👇 UNLOCK handler
   const handleUnlock = async () => {
     if (!pcId || pcId === 'undefined') {
       toast.error('ID du PC invalide');
@@ -447,8 +466,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
   };
 
   const handleLaunchGame = async (game: Game) => {
-    console.log('🎮 Launching game:', game);
-
     const executablePath = game.executable_path;
 
     if (!executablePath || executablePath === '' || executablePath === 'NO_PATH') {
@@ -490,7 +507,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
         toast.error(data.message || 'Erreur lors du lancement');
       }
     } catch (error) {
-      console.error('❌ Launch error:', error);
       toast.error('Erreur lors du lancement');
     }
   };
@@ -535,6 +551,11 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
 
   const selectedUser = users.find(u => u.id === parseInt(selectedUserId));
 
+  // 👇 NEW: Device status helpers
+  const hasKeyboard = pc.has_keyboard ?? true;
+  const hasMouse = pc.has_mouse ?? true;
+  const deviceMissing = !hasKeyboard || !hasMouse;
+
   return (
     <div className="min-h-screen bg-[#0a0a1a] p-6">
       <div className="max-w-7xl mx-auto">
@@ -557,6 +578,12 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                   <span className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full text-xs">
                     🔐 ADMIN
                   </span>
+                  {/* 👇 NEW: Device alert badge in header */}
+                  {deviceMissing && (
+                    <span className="bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full text-xs animate-pulse">
+                      🚨 Périphérique manquant
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -634,6 +661,103 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                   <div className="text-sm text-white">{pc.hardware?.ram || '-'}</div>
                 </div>
               </div>
+            </div>
+
+            {/* 👇 NEW: Périphériques */}
+            <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
+              <h2 className="text-lg font-semibold text-[#e94560] mb-4">
+                🖱️ Périphériques
+              </h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                {/* Keyboard */}
+                <div
+                  className={`p-4 rounded-lg border-2 transition ${
+                    hasKeyboard
+                      ? 'bg-green-500/5 border-green-500/40'
+                      : 'bg-red-500/10 border-red-500/50 animate-pulse'
+                  }`}
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <div className="text-xs text-gray-500 uppercase">⌨️ Clavier</div>
+                      <div
+                        className={`text-lg font-bold ${
+                          hasKeyboard ? 'text-green-400' : 'text-red-400'
+                        }`}
+                      >
+                        {hasKeyboard ? 'Connecté' : 'Débranché !'}
+                      </div>
+                    </div>
+                    <div className="text-3xl">
+                      {hasKeyboard ? '✅' : '⚠️'}
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-2">
+                    {pc.keyboard_count !== undefined
+                      ? `${pc.keyboard_count} clavier(s) détecté(s)`
+                      : 'En attente de données…'}
+                  </div>
+                </div>
+
+                {/* Mouse */}
+                <div
+                  className={`p-4 rounded-lg border-2 transition ${
+                    hasMouse
+                      ? 'bg-green-500/5 border-green-500/40'
+                      : 'bg-red-500/10 border-red-500/50 animate-pulse'
+                  }`}
+                >
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <div className="text-xs text-gray-500 uppercase">🖱️ Souris</div>
+                      <div
+                        className={`text-lg font-bold ${
+                          hasMouse ? 'text-green-400' : 'text-red-400'
+                        }`}
+                      >
+                        {hasMouse ? 'Connectée' : 'Débranchée !'}
+                      </div>
+                    </div>
+                    <div className="text-3xl">
+                      {hasMouse ? '✅' : '⚠️'}
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-2">
+                    {pc.mouse_count !== undefined
+                      ? `${pc.mouse_count} souris détectée(s)`
+                      : 'En attente de données…'}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Anti-theft warning */}
+              {deviceMissing && (
+                <div className="mt-4 p-3 bg-red-500/10 border border-red-500/40 rounded-lg">
+                  <div className="flex items-start gap-2">
+                    <span className="text-xl">🚨</span>
+                    <div>
+                      <div className="text-red-400 font-bold text-sm">
+                        Alerte anti-vol
+                      </div>
+                      <div className="text-xs text-gray-300 mt-1">
+                        {!hasKeyboard && !hasMouse && (
+                          <>Le clavier ET la souris ont été débranchés.</>
+                        )}
+                        {!hasKeyboard && hasMouse && (
+                          <>Le clavier a été débranché.</>
+                        )}
+                        {hasKeyboard && !hasMouse && (
+                          <>La souris a été débranchée.</>
+                        )}
+                        {' '}Le joueur a peut-être tenté de voler le matériel.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Games */}
@@ -730,7 +854,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                     </div>
                   </div>
 
-                  {/* User Selection Dropdown */}
                   <div className="mb-4">
                     <label className="block text-xs text-gray-400 mb-1">Sélectionner le joueur</label>
                     <select
@@ -747,7 +870,6 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                     </select>
                   </div>
 
-                  {/* Selected User Balance Display */}
                   {selectedUser && (
                     <div className="bg-[#0f0f23] rounded-lg p-3 mb-4 text-center border border-[#2a2a4a]">
                       <div className="text-xs text-gray-500">Solde de {selectedUser.username}</div>
@@ -779,8 +901,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
             <div className="bg-[#1a1a2e] rounded-xl p-6 border border-[#2a2a4a]">
               <h2 className="text-lg font-semibold text-[#e94560] mb-4">🔧 Contrôles Admin</h2>
 
-              {/* 👇 UNLOCK button — only visible when PC is locked (session active) */}
-              {isInSession && (
+              <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={handleUnlock}
                   className="w-full mb-4 bg-gradient-to-r from-green-500 to-emerald-500
@@ -791,9 +912,7 @@ export default function PCDetail({ params }: { params: Promise<{ id: string }> }
                 >
                   🔓 Déverrouiller le PC
                 </button>
-              )}
 
-              <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={() => handleCommand('LOCK')}
                   className="bg-yellow-500 text-black py-2 rounded-lg hover:bg-yellow-600 transition font-semibold"

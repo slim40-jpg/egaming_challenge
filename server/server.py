@@ -108,7 +108,7 @@ def heartbeat():
             if c:
                 return c
         return None
-
+    
     pc.hostname = _text(data.get('hostname'), pc.hostname)
     pc.ip_address = _text(data.get('ip_address'), data.get('ip'), pc.ip_address)
     pc.status = 'online'
@@ -125,6 +125,22 @@ def heartbeat():
     if 'is_fullscreen' in features:
         pc.is_fullscreen = bool(features['is_fullscreen'])
 
+    # 👇 NEW: input device status (keyboard + mouse)
+    if 'has_keyboard' in features:
+        pc.has_keyboard = bool(features['has_keyboard'])
+    if 'has_mouse' in features:
+        pc.has_mouse = bool(features['has_mouse'])
+    if 'keyboard_count' in features:
+        try:
+            pc.keyboard_count = int(features['keyboard_count'])
+        except (TypeError, ValueError):
+            pass
+    if 'mouse_count' in features:
+        try:
+            pc.mouse_count = int(features['mouse_count'])
+        except (TypeError, ValueError):
+            pass
+
     pc.cpu_model = _text(hardware.get('cpu'), data.get('cpu_model'), pc.cpu_model)
     pc.gpu_model = _text(hardware.get('gpu'), data.get('gpu_model'), pc.gpu_model)
     pc.ram_size  = _text(hardware.get('ram'), data.get('ram_total'), pc.ram_size)
@@ -132,9 +148,11 @@ def heartbeat():
     db.session.commit()
 
     # Optional: log to confirm
-    print(f'💓 {pc_id}  cpu={pc.cpu_usage}  ram={pc.ram_usage}  gpu={pc.gpu_usage}')
+    print(f'💓 {pc_id}  cpu={pc.cpu_usage}  ram={pc.ram_usage}  gpu={pc.gpu_usage}  '
+          f'kb={pc.has_keyboard}  mouse={pc.has_mouse}')
 
     return jsonify({'status': 'ok'})
+
 
 @app.route('/api/games/installed', methods=['POST'])
 def report_installed_games():
@@ -152,6 +170,7 @@ def report_installed_games():
     pc.installed_games = games
     db.session.commit()
     return jsonify({'status': 'ok'})
+
 
 @app.route('/api/commands/<pc_id>', methods=['GET'])
 def poll_commands(pc_id):
@@ -176,7 +195,7 @@ def poll_commands(pc_id):
         elif c.command == 'START_SESSION':
             parameter = p.get('user_name') or p.get('user') or 'Player'
         else:
-            # LOCK, SHUTDOWN, RESTART — no parameter
+            # LOCK, UNLOCK, SHUTDOWN, RESTART — no parameter
             parameter = ''
 
         out.append({
@@ -188,6 +207,7 @@ def poll_commands(pc_id):
 
     db.session.commit()
     return jsonify({'status': 'ok', 'commands': out})
+
 
 # ─────────────────────────────────────────────────────────────
 # Admin / dashboard endpoints (JWT)
@@ -212,7 +232,7 @@ def list_pcs():
 @app.route('/api/pc/<pc_id>', methods=['GET'])
 @jwt_required()
 def pc_detail(pc_id):
-    pc = PC.query.filter_by(id=pc_id).first()               # ← was pc_id=
+    pc = PC.query.filter_by(id=pc_id).first()
     if not pc:
         return jsonify({'error': 'not found'}), 404
 
@@ -245,13 +265,18 @@ def pc_detail(pc_id):
             'gpu': pc.gpu_model,
             'ram': pc.ram_total,
         },
+        # 👇 NEW: input device status
+        'has_keyboard': bool(pc.has_keyboard if pc.has_keyboard is not None else True),
+        'has_mouse':    bool(pc.has_mouse    if pc.has_mouse    is not None else True),
+        'keyboard_count': pc.keyboard_count or 0,
+        'mouse_count':    pc.mouse_count    or 0,
     })
 
 
 @app.route('/api/pc/<pc_id>/games', methods=['GET'])
 @jwt_required()
 def pc_games(pc_id):
-    pc = PC.query.filter_by(id=pc_id).first()               # ← was pc_id=
+    pc = PC.query.filter_by(id=pc_id).first()
     if not pc:
         return jsonify({'status': 'error', 'message': 'PC not found'}), 404
     return jsonify({'status': 'ok', 'games': pc.installed_games or []})
@@ -368,6 +393,7 @@ def _wallet_for(username):
 
     return w
 
+
 @app.route('/api/wallet', methods=['GET'])
 @jwt_required()
 def get_wallet():
@@ -386,6 +412,7 @@ def get_wallet():
             'balance': w.balance
         }
     })
+
 
 @app.route('/api/wallet/topup', methods=['POST'])
 @jwt_required()
@@ -410,7 +437,7 @@ def mark_offline_pcs():
     dirty = False
     for pc in PC.query.all():
         if pc.last_heartbeat and pc.last_heartbeat.timestamp() < threshold:
-            if pc.status != 'offline':                # ← write to status, not online
+            if pc.status != 'offline':
                 pc.status = 'offline'
                 dirty = True
     if dirty:
@@ -420,14 +447,9 @@ def mark_offline_pcs():
 # ─────────────────────────────────────────────────────────────
 # UDP discovery broadcaster
 # ─────────────────────────────────────────────────────────────
-#
-# The agent listens on UDP port 9000 for a broadcast. Every
-# DISCOVERY_INTERVAL seconds we shout:
-#   {"service":"ninety-gaming-local","host":"192.168.x.y","port":8003}
-# The agent then knows where to POST heartbeats.
-#
+
 DISCOVERY_PORT = 9000
-DISCOVERY_INTERVAL = 3   # seconds
+DISCOVERY_INTERVAL = 2   # seconds
 
 
 def _detect_lan_ip() -> str:
@@ -447,9 +469,6 @@ def _detect_lan_ip() -> str:
         return "127.0.0.1"
     finally:
         s.close()
-
-DISCOVERY_PORT = 9000
-DISCOVERY_INTERVAL = 2   # seconds — agent waits up to 10s on startup, be generous
 
 
 def _broadcast_presence():

@@ -14,15 +14,15 @@ if %errorlevel% neq 0 (
 )
 
 echo [1] Installing service...
-agent.exe --install
+gaming_agent.exe --install
 
 if %errorlevel% equ 0 (
     echo.
     echo [2] Starting service...
-    agent.exe --start
+    gaming_agent.exe --start
     echo.
     echo [3] Checking status...
-    agent.exe --status
+    gaming_agent.exe --status
 ) else (
     echo [!] Installation failed!
 )

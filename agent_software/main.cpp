@@ -8,6 +8,7 @@
 // ============================================================
 // HEADER FILES
 // ============================================================
+#include "network_resilience.h"
 #include "device_monitor.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -934,6 +935,30 @@ std::string CollectTelemetry()
     int windowWidth = 0, windowHeight = 0;
     GetWindowSize(windowWidth, windowHeight);
 
+    // 👇 NEW: current input devices
+    std::vector<InputDevice> inputDevices = GetInputDevices();
+    bool hasKeyboard = false;
+    bool hasMouse = false;
+    int keyboardCount = 0;
+    int mouseCount = 0;
+
+    for (const auto &dev : inputDevices)
+    {
+        std::string cls = dev.deviceClass;
+        std::transform(cls.begin(), cls.end(), cls.begin(), ::tolower);
+
+        if (cls.find("keyboard") != std::string::npos)
+        {
+            hasKeyboard = true;
+            keyboardCount++;
+        }
+        else if (cls.find("mouse") != std::string::npos)
+        {
+            hasMouse = true;
+            mouseCount++;
+        }
+    }
+
     std::stringstream json;
     json << "{"
          << "\"process_name\":\"" << currentGame << "\","
@@ -944,40 +969,39 @@ std::string CollectTelemetry()
          << "\"window_title\":\"" << windowTitle << "\","
          << "\"is_fullscreen\":" << (isFullscreen ? 1 : 0) << ","
          << "\"window_width\":" << windowWidth << ","
-         << "\"window_height\":" << windowHeight
+         << "\"window_height\":" << windowHeight << ","
+         // 👇 NEW: device info
+         << "\"has_keyboard\":" << (hasKeyboard ? "true" : "false") << ","
+         << "\"has_mouse\":" << (hasMouse ? "true" : "false") << ","
+         << "\"keyboard_count\":" << keyboardCount << ","
+         << "\"mouse_count\":" << mouseCount
          << "}";
 
     return json.str();
 }
 
 // ============================================================
-// 🔒 OS LOCKDOWN (KIOSK MODE) - CORRECTED
+// 🔒 OS LOCKDOWN (KIOSK MODE)
 // ============================================================
 
 const char *POLICY_PATH = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System";
 const char *EXPLORER_PATH = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
 
-// Forward declaration
 LRESULT CALLBACK LockWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // ─── Registry Lockdown ───
 void EnableRegistryLockdown()
 {
-    LogMessage("[LOCKDOWN-REG] Starting registry lockdown...");
-
     HKEY hKey;
     DWORD one = 1;
 
-    LogMessage("[LOCKDOWN-REG] Step 1: Disabling Task Manager");
     if (RegCreateKeyExA(HKEY_CURRENT_USER, POLICY_PATH, 0, NULL,
                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
     {
         RegSetValueExA(hKey, "DisableTaskMgr", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
         RegCloseKey(hKey);
     }
-    LogMessage("[LOCKDOWN-REG] Step 1 done");
 
-    LogMessage("[LOCKDOWN-REG] Step 2: Disabling Ctrl+Alt+Del options");
     if (RegCreateKeyExA(HKEY_CURRENT_USER, POLICY_PATH, 0, NULL,
                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
     {
@@ -985,25 +1009,17 @@ void EnableRegistryLockdown()
         RegSetValueExA(hKey, "DisableChangePassword", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
         RegCloseKey(hKey);
     }
-    LogMessage("[LOCKDOWN-REG] Step 2 done");
 
-    LogMessage("[LOCKDOWN-REG] Step 3: Disabling Win keys");
     if (RegCreateKeyExA(HKEY_CURRENT_USER, EXPLORER_PATH, 0, NULL,
                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
     {
         RegSetValueExA(hKey, "NoWinKeys", 0, REG_DWORD, (BYTE *)&one, sizeof(one));
         RegCloseKey(hKey);
     }
-    LogMessage("[LOCKDOWN-REG] Step 3 done");
-
-    LogMessage("[LOCKDOWN-REG] Step 4: Broadcasting settings change...");
-    SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-                        (LPARAM) "Software\\Microsoft\\Windows",
-                        SMTO_ABORTIFHUNG, 500, NULL);
-    LogMessage("[LOCKDOWN-REG] Step 4 done");
 
     LogMessage("[LOCKDOWN] Registry lockdown ENABLED");
 }
+
 void DisableRegistryLockdown()
 {
     HKEY hKey;
@@ -1022,10 +1038,6 @@ void DisableRegistryLockdown()
         RegCloseKey(hKey);
     }
 
-    SendMessageTimeoutA(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-                        (LPARAM) "Software\\Microsoft\\Windows",
-                        SMTO_ABORTIFHUNG | SMTO_NOTIMEOUTIFNOTHUNG, 500, NULL);
-
     LogMessage("[LOCKDOWN] Registry lockdown DISABLED");
 }
 
@@ -1035,20 +1047,37 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
     if (nCode == HC_ACTION && g_IsLocked)
     {
         KBDLLHOOKSTRUCT *pKey = (KBDLLHOOKSTRUCT *)lParam;
+        DWORD vk = pKey->vkCode;
+        bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool winDown = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) ||
+                       ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
 
-        if (pKey->vkCode == VK_F4 && (GetAsyncKeyState(VK_MENU) & 0x8000))
+        if (altDown && vk == VK_F4)
             return 1;
-        if (pKey->vkCode == VK_TAB && (GetAsyncKeyState(VK_MENU) & 0x8000))
+        if (altDown && vk == VK_TAB)
             return 1;
-        if (pKey->vkCode == VK_LWIN || pKey->vkCode == VK_RWIN)
+        if (altDown && vk == VK_ESCAPE)
             return 1;
-        if (pKey->vkCode == VK_ESCAPE && (GetAsyncKeyState(VK_CONTROL) & 0x8000))
+        if (altDown && vk == VK_SPACE)
             return 1;
-        if ((GetAsyncKeyState(VK_LWIN) & 0x8000) || (GetAsyncKeyState(VK_RWIN) & 0x8000))
-        {
-            if (pKey->vkCode == 'D' || pKey->vkCode == 'L' || pKey->vkCode == 'R')
-                return 1;
-        }
+        if (ctrlDown && vk == VK_ESCAPE)
+            return 1;
+        if (ctrlDown && shiftDown && vk == VK_ESCAPE)
+            return 1;
+        if (vk == VK_LWIN || vk == VK_RWIN)
+            return 1;
+        if (winDown)
+            return 1;
+        if (vk == VK_F10)
+            return 1;
+        if (ctrlDown && vk == 'W')
+            return 1;
+        if (ctrlDown && vk == 'R')
+            return 1;
+        if (vk == VK_SNAPSHOT)
+            return 1;
     }
     return CallNextHookEx(g_hKeyboardHook, nCode, wParam, lParam);
 }
@@ -1062,10 +1091,27 @@ LRESULT CALLBACK LockWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         LogMessage("[LOCKDOWN] WM_CLOSE received");
         DestroyWindow(hwnd);
         return 0;
+
     case WM_DESTROY:
         LogMessage("[LOCKDOWN] WM_DESTROY received");
         PostQuitMessage(0);
         return 0;
+
+    case WM_KILLFOCUS:
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetForegroundWindow(hwnd);
+        SetFocus(hwnd);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == 1)
+        {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        }
+        return 0;
+
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
@@ -1109,12 +1155,25 @@ LRESULT CALLBACK LockWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-// ─── Lock Window Thread (with message loop) ───
+// ─── Lock Window Thread ───
 DWORD WINAPI LockWindowThread(LPVOID lpParam)
 {
     LogMessage("[LOCKDOWN] Lock thread started");
 
-    // Register window class
+    // Install keyboard hook IN THIS THREAD (has a message loop)
+    if (!g_hKeyboardHook)
+    {
+        g_hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+        if (!g_hKeyboardHook)
+        {
+            LogMessage("[LOCKDOWN] ⚠️ Keyboard hook failed: " + std::to_string(GetLastError()));
+        }
+        else
+        {
+            LogMessage("[LOCKDOWN] ✅ Keyboard hook installed");
+        }
+    }
+
     WNDCLASSA wc = {};
     wc.lpfnWndProc = LockWndProc;
     wc.hInstance = GetModuleHandle(NULL);
@@ -1128,7 +1187,6 @@ DWORD WINAPI LockWindowThread(LPVOID lpParam)
         if (err != ERROR_CLASS_ALREADY_EXISTS)
         {
             LogMessage("[LOCKDOWN] ❌ RegisterClassA failed: " + std::to_string(err));
-            return 1;
         }
     }
 
@@ -1158,7 +1216,8 @@ DWORD WINAPI LockWindowThread(LPVOID lpParam)
 
     LogMessage("[LOCKDOWN] Window shown, entering message loop");
 
-    // ─── CRITICAL: Message loop keeps the window alive ───
+    SetTimer(g_hLockWindow, 1, 500, NULL);
+
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0))
     {
@@ -1167,6 +1226,13 @@ DWORD WINAPI LockWindowThread(LPVOID lpParam)
     }
 
     LogMessage("[LOCKDOWN] Message loop exited");
+
+    if (g_hKeyboardHook)
+    {
+        UnhookWindowsHookEx(g_hKeyboardHook);
+        g_hKeyboardHook = NULL;
+        LogMessage("[LOCKDOWN] Keyboard hook removed");
+    }
 
     g_hLockWindow = NULL;
     UnregisterClassA("GamingLockScreen", GetModuleHandle(NULL));
@@ -1177,33 +1243,19 @@ DWORD WINAPI LockWindowThread(LPVOID lpParam)
 void ApplyLock()
 {
     if (g_IsLocked)
-    {
-        LogMessage("[LOCKDOWN] Already locked, skipping");
         return;
-    }
 
     LogMessage("[LOCKDOWN] Applying OS lockdown...");
 
-    // 👇 Run the registry lockdown in the BACKGROUND so it doesn't block the window
     std::thread(EnableRegistryLockdown).detach();
-
-    if (!g_hKeyboardHook)
-    {
-        g_hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
-        if (!g_hKeyboardHook)
-        {
-            LogMessage("[LOCKDOWN] ⚠️ Keyboard hook failed: " + std::to_string(GetLastError()));
-        }
-        else
-        {
-            LogMessage("[LOCKDOWN] Keyboard hook installed");
-        }
-    }
 
     g_IsLocked = true;
     g_Status = "locked";
 
-    // Launch the lock window thread (with message loop)
+    // Persist lock state
+    g_OfflineState.is_locked = true;
+    SaveOfflineState();
+
     HANDLE hThread = CreateThread(NULL, 0, LockWindowThread, NULL, 0, NULL);
     if (hThread)
     {
@@ -1222,13 +1274,6 @@ void RemoveLock()
         return;
 
     LogMessage("[LOCKDOWN] Removing lockdown...");
-
-    if (g_hKeyboardHook)
-    {
-        UnhookWindowsHookEx(g_hKeyboardHook);
-        g_hKeyboardHook = NULL;
-        LogMessage("[LOCKDOWN] Keyboard hook removed");
-    }
 
     if (g_hLockWindow)
     {
@@ -1254,6 +1299,10 @@ void RemoveLock()
 
     g_IsLocked = false;
     g_Status = "online";
+
+    // Persist unlock state
+    g_OfflineState.is_locked = false;
+    SaveOfflineState();
 
     LogMessage("[LOCKDOWN] ✅ Lockdown removed");
 }
@@ -1413,6 +1462,8 @@ bool SendTelemetry()
          << "\"pc_id\":\"" << macAddress << "\","
          << "\"hostname\":\"" << g_Hostname << "\","
          << "\"ip_address\":\"" << ipAddress << "\","
+         << "\"status\":\"" << g_Status << "\","
+         << "\"is_locked\":" << (g_IsLocked ? "true" : "false") << ","
          << "\"features\":" << telemetryData << ","
          << "\"hardware\":{"
          << "\"cpu\":\"" << cpuName << "\","
@@ -1425,7 +1476,9 @@ bool SendTelemetry()
     LogMessage("[DEBUG] ===== SENDING TELEMETRY =====");
     LogMessage("[DEBUG] Data: " + data);
     LogMessage("[DEBUG] ==============================");
-    return SendTelemetryToEndpoint(data, "/api/heartbeat");
+
+    // 👇 Use SendOrQueue to handle offline gracefully
+    return SendOrQueue("/api/heartbeat", data);
 }
 
 // ============================================================
@@ -1531,7 +1584,6 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
 
     if (command == "LOCK")
     {
-        // OS LOCKDOWN (kiosk window + registry + keyboard hook)
         std::thread(ApplyLock).detach();
         LogMessage("[EXEC] ✅ OS Lockdown initiated");
     }
@@ -1622,8 +1674,13 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
         g_Status = "in_session";
         g_SessionActive = true;
         g_SessionStartTime = std::chrono::steady_clock::now();
-        // Default: 60 min (server can send duration via parameter later)
         g_SessionDurationMinutes = 60;
+
+        // 👇 Persist session state to disk
+        g_OfflineState.current_user = g_SessionUser;
+        g_OfflineState.session_start = g_SessionStartTime;
+        g_OfflineState.in_session = true;
+        SaveOfflineState();
 
         LogMessage("[EXEC] ✅ Session started for: " + g_SessionUser +
                    " (duration: " + std::to_string(g_SessionDurationMinutes) + " min)");
@@ -1634,6 +1691,12 @@ void ExecuteCommand(const std::string &command, const std::string &parameter)
         g_SessionUser = "";
         g_Status = "online";
         g_SessionActive = false;
+
+        // 👇 Clear offline state
+        g_OfflineState.current_user = "";
+        g_OfflineState.in_session = false;
+        g_OfflineState.is_locked = false;
+        SaveOfflineState();
 
         if (g_IsLocked)
         {
@@ -2000,7 +2063,6 @@ void AgentMainLoop()
     {
         auto now = std::chrono::steady_clock::now();
 
-        // ─── Session time enforcement ───
         if (g_SessionActive)
         {
             auto elapsed = std::chrono::duration_cast<std::chrono::minutes>(
@@ -2107,6 +2169,9 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
     g_Hostname = GetHostname();
     g_Running = true;
 
+    // 👇 Initialize network resilience
+    InitNetworkResilience();
+
     LogMessage("[SERVICE] Discovering server...");
     std::string serverIP = DiscoverServer(15);
     if (serverIP.empty())
@@ -2118,6 +2183,13 @@ void WINAPI ServiceMain(DWORD argc, LPSTR *argv)
     {
         SERVER_URL = "http://" + serverIP + ":8003";
         LogMessage("[SERVICE] ✅ Server discovered at: " + SERVER_URL);
+
+        // 👇 Re-lock if we were locked before restart
+        if (g_OfflineState.in_session && g_OfflineState.is_locked)
+        {
+            LogMessage("[RECOVERY] Previous session was locked — re-applying lockdown");
+            std::thread(ApplyLock).detach();
+        }
     }
 
     g_ServiceThread = std::thread(AgentMainLoop);
@@ -2369,6 +2441,9 @@ int main()
 
     g_Hostname = GetHostname();
 
+    // 👇 Initialize network resilience
+    InitNetworkResilience();
+
     auto devices = GetInputDevices();
     std::cout << "===========================================" << std::endl;
     std::cout << "   INPUT DEVICES DETECTED" << std::endl;
@@ -2404,6 +2479,14 @@ int main()
 
     SERVER_URL = "http://" + serverIP + ":8003";
     std::cout << "✅ Server found at: " << SERVER_URL << std::endl;
+
+    // 👇 Re-lock if we were locked before restart
+    if (g_OfflineState.in_session && g_OfflineState.is_locked)
+    {
+        std::cout << "[RECOVERY] Previous session was locked — re-applying lockdown" << std::endl;
+        std::thread(ApplyLock).detach();
+    }
+
     std::cout << "===========================================" << std::endl;
     std::cout << "Agent is running. Press Enter to stop..." << std::endl;
 

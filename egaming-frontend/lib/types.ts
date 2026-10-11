@@ -45,6 +45,10 @@ export interface PC {
   wallet_balance: number;
   installed_games: Game[];
   branch: string;
+  has_keyboard?: boolean;
+  has_mouse?: boolean;
+  keyboard_count?: number;
+  mouse_count?: number
 }
 
 export interface ApiResponse<T> {

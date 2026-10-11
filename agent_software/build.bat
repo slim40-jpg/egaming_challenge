@@ -13,8 +13,8 @@ if exist gaming_agent.exe del gaming_agent.exe
 if exist *.o del *.o
 
 echo.
-echo Compiling main.cpp, device_monitor.cpp, and game_discovery.cpp...
-%CXX% %CXXFLAGS% -o gaming_agent.exe main.cpp device_monitor.cpp game_discovery.cpp %LDFLAGS%
+echo Compiling main.cpp, device_monitor.cpp, network_resilience.cpp and game_discovery.cpp...
+%CXX% %CXXFLAGS% -o gaming_agent.exe main.cpp device_monitor.cpp game_discovery.cpp network_resilience.cpp %LDFLAGS%
 
 if %errorlevel% == 0 (
     echo.

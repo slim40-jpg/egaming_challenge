@@ -67,7 +67,10 @@ class PC(db.Model):
     last_telemetry = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     installed_games = db.Column(db.JSON, default=list)
-
+    has_keyboard   = db.Column(db.Boolean, default=True)
+    has_mouse      = db.Column(db.Boolean, default=True)
+    keyboard_count = db.Column(db.Integer, default=0)
+    mouse_count    = db.Column(db.Integer, default=0)
     # ─────────────────────────────────────────────────
     # Read-only convenience properties.
     # These DO NOT get set by the constructor.

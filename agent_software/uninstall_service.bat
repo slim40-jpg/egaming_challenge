@@ -14,10 +14,10 @@ if %errorlevel% neq 0 (
 )
 
 echo [1] Stopping service...
-agent.exe --stop
+gaming_agent --stop
 
 echo [2] Uninstalling service...
-agent.exe --uninstall
+gaming_agent --uninstall
 
 echo.
 echo ============================================

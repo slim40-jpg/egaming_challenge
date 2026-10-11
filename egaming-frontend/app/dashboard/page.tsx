@@ -185,18 +185,19 @@ export default function Dashboard() {
                 </div>
 
                 {/* Player action */}
-                <Link
-                  href={`/reservations/new?pc_id=${encodeURIComponent(pc.pc_id)}`}
-                  className={`block text-center py-2 rounded-lg font-semibold transition ${
-                    pc.state === 'available'
-                      ? 'bg-[#e94560] text-white hover:bg-[#c73652]'
-                      : 'bg-[#2a2a4a] text-gray-500 cursor-not-allowed'
-                  }`}
-                  onClick={(e) => pc.state !== 'available' && e.preventDefault()}
-                >
-                  {pc.state === 'available' ? 'Réserver' : 'Indisponible'}
-                </Link>
-
+                {!isAdmin && (
+                  <Link
+                    href={`/reservations/new?pc_id=${encodeURIComponent(pc.pc_id)}`}
+                    className={`block text-center py-2 rounded-lg font-semibold transition ${
+                      pc.state === 'available'
+                        ? 'bg-[#e94560] text-white hover:bg-[#c73652]'
+                        : 'bg-[#2a2a4a] text-gray-500 cursor-not-allowed'
+                    }`}
+                    onClick={(e) => pc.state !== 'available' && e.preventDefault()}
+                  >
+                    {pc.state === 'available' ? 'Réserver' : 'Indisponible'}
+                  </Link>
+                )}
                 {/* Admin action */}
                 {isAdmin && (
                   <Link
