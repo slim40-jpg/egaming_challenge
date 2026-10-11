@@ -1,5 +1,7 @@
 # CSTAM — Intelligent eSports Venue Management Platform
 
+([build_status] : https://github.com/slim40-jpg/egaming_challenge/actions/workflows/build.yml/badge.svg)
+
 CSTAM is an intelligent eSports venue management platform composed of:
 
 - 🎮 **Gaming Agent** — runs on each gaming PC and collects hardware/system information.
