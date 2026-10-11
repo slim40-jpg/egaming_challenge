@@ -105,3 +105,55 @@ class Reservation(db.Model):
             'synced_at': self.synced_at.isoformat() if self.synced_at else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+class Plan(db.Model):
+    """A subscription plan (Free, Basic, Premium, Pro Gamer)"""
+    __tablename__ = 'plans'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    price_per_month = db.Column(db.Float, nullable=False, default=0.0)
+    included_hours = db.Column(db.Float, nullable=False, default=0.0)
+    discount_percent = db.Column(db.Integer, nullable=False, default=0)
+    color = db.Column(db.String(20), default='gray')
+    description = db.Column(db.String(255))
+    is_active = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'price_per_month': self.price_per_month,
+            'included_hours': self.included_hours,
+            'discount_percent': self.discount_percent,
+            'color': self.color,
+            'description': self.description,
+            'is_active': self.is_active,
+        }
+
+
+class Subscription(db.Model):
+    """An active subscription for a user"""
+    __tablename__ = 'subscriptions'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    plan_id = db.Column(db.Integer, db.ForeignKey('plans.id'), nullable=False)
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    hours_remaining = db.Column(db.Float, default=0.0)
+    is_active = db.Column(db.Boolean, default=True)
+
+    plan = db.relationship('Plan', backref='subscriptions')
+    user = db.relationship('User', backref='subscriptions')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'plan_id': self.plan_id,
+            'plan_name': self.plan.name if self.plan else None,
+            'plan_color': self.plan.color if self.plan else 'gray',
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'hours_remaining': self.hours_remaining,
+            'is_active': self.is_active,
+        }    

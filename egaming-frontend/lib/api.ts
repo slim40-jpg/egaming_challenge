@@ -79,6 +79,10 @@ export const cloud = {
   adminGetUser: (userId: number) => cloudApi.get(`/api/admin/users/${userId}`),
   adminTopupUser: (userId: number, amount: number) => 
     cloudApi.post(`/api/admin/users/${userId}/topup`, { amount }),
+  listPlans: () => cloudApi.get('/api/plans'),
+  mySubscription: () => cloudApi.get('/api/subscription/me'),
+  subscribe: (planId: number) =>
+    cloudApi.post('/api/subscription/subscribe', { plan_id: planId }),
 };
 
 // ─── Local calls (admin only) ────────────────────────────

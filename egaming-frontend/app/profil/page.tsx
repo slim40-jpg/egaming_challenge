@@ -148,6 +148,33 @@ export default function ProfilePage() {
               </div>
             </div>
 
+            {/* Subscription Card — Clickable */}
+            <Link
+              href="/subscription"
+              className="block bg-gradient-to-br from-[#1a1a2e] to-[#0f0f23] rounded-xl p-6 border border-[#2a2a4a] hover:border-yellow-400/60 transition group"
+            >
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-lg font-bold text-white mb-1">
+                    ⭐ Mon Abonnement
+                  </h2>
+                  <p className="text-xs text-gray-500">
+                    Découvrez nos formules et abonnez-vous
+                  </p>
+                </div>
+                <div className="text-3xl group-hover:scale-110 transition">
+                  →
+                </div>
+              </div>
+
+              {/* Optional: show current plan if active */}
+              <div className="mt-3 pt-3 border-t border-[#2a2a4a]">
+                <div className="text-xs text-gray-500 uppercase">Statut</div>
+                <div className="text-sm text-yellow-400 font-bold">
+                  Cliquez pour voir les plans
+                </div>
+              </div>
+            </Link>
             {/* Wallet Card */}
             <div className="bg-gradient-to-br from-[#1a1a2e] to-[#0f0f23] rounded-xl p-6 border border-[#e94560]/30 shadow-[0_0_15px_rgba(233,69,96,0.1)]">
               <h2 className="text-xl font-bold text-white mb-2">💳 Mon Portefeuille</h2>

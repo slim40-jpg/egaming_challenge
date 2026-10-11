@@ -9,8 +9,8 @@ from flask_jwt_extended import (
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
 
-# 👇 Updated Import to include Transaction
-from models import db, User, PCMirror, Reservation, Transaction
+# 👇 Updated: include Plan and Subscription
+from models import db, User, PCMirror, Reservation, Transaction, Plan, Subscription
 
 load_dotenv()
 
@@ -97,7 +97,7 @@ def register():
         email=email,
         password_hash=bcrypt.generate_password_hash(password).decode(),
         role=role,
-        wallet_balance=0.0  # Initialize wallet to 0
+        wallet_balance=0.0
     )
     db.session.add(user)
     db.session.commit()
@@ -141,7 +141,7 @@ def list_pcs():
 def availability():
     """Check if a given PC is free at a given time."""
     pc_id = request.args.get('pc_id')
-    start = request.args.get('start')  # ISO
+    start = request.args.get('start')
     end = request.args.get('end')
 
     if not pc_id or not start or not end:
@@ -171,12 +171,10 @@ def availability():
 @jwt_required()
 def my_reservations():
     user_id = int(get_jwt_identity())
-    # Note: Your Reservation model uses user_email, not user_id. 
-    # You might need to fetch the user's email first to filter correctly.
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': 'User not found'}), 404
-        
+
     rows = Reservation.query.filter_by(user_email=user.email).order_by(
         Reservation.start_time.desc()
     ).all()
@@ -209,14 +207,12 @@ def create_reservation():
     if end_dt <= start_dt:
         return jsonify({'error': 'end must be after start'}), 400
 
-    # Check PC exists and is reservable
     pc = PCMirror.query.filter_by(center_id=center_id, pc_id=pc_id).first()
     if not pc:
         return jsonify({'error': 'PC not found'}), 404
     if pc.state == 'maintenance':
         return jsonify({'error': 'PC under maintenance'}), 409
 
-    # Check overlap
     conflict = Reservation.query.filter(
         Reservation.pc_id == pc_id,
         Reservation.status == 'accepted',
@@ -227,7 +223,7 @@ def create_reservation():
         return jsonify({'error': 'time slot already booked'}), 409
 
     r = Reservation(
-        id=os.urandom(16).hex(), # Generate a UUID string
+        id=os.urandom(16).hex(),
         user_name=user.username,
         user_email=user.email,
         center_id=center_id,
@@ -250,7 +246,7 @@ def cancel_reservation(rid):
     r = Reservation.query.get(rid)
     if not r:
         return jsonify({'error': 'reservation not found'}), 404
-        
+
     user = User.query.get(user_id)
     if r.user_email != user.email and claims.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
@@ -261,18 +257,17 @@ def cancel_reservation(rid):
 
 
 # ─────────────────────────────────────────────────────────────
-# 👇 NEW: WALLET ENDPOINTS (Cloud-based, Player-facing)
+# WALLET ENDPOINTS
 # ─────────────────────────────────────────────────────────────
 
 @app.route('/api/wallet', methods=['GET'])
 @jwt_required()
 def get_wallet():
-    """Player views their own wallet balance"""
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': 'user not found'}), 404
-        
+
     return jsonify({
         'status': 'ok',
         'wallet': {
@@ -281,34 +276,28 @@ def get_wallet():
         }
     })
 
+
 @app.route('/api/wallet/recharge', methods=['POST'])
 @jwt_required()
 def recharge_wallet():
-    """
-    Player recharges their wallet from the cloud.
-    In a real app, this would be called AFTER a successful payment gateway webhook.
-    For the MVP, we simulate the payment success here.
-    """
     user_id = int(get_jwt_identity())
     user = User.query.get(user_id)
     data = request.get_json() or {}
-    
+
     amount = data.get('amount')
-    
+
     if not amount or not isinstance(amount, (int, float)) or amount <= 0:
         return jsonify({'error': 'Valid positive amount is required'}), 400
 
-    # Update Balance
     user.wallet_balance += amount
-    
-    # Create Audit Log
+
     tx = Transaction(
         user_id=user.id,
         amount=amount,
         type='recharge',
         description=f'Cloud recharge of {amount} TND'
     )
-    
+
     db.session.add(tx)
     db.session.commit()
 
@@ -319,10 +308,10 @@ def recharge_wallet():
         'transaction': tx.to_dict()
     }), 200
 
+
 @app.route('/api/wallet/transactions', methods=['GET'])
 @jwt_required()
 def get_transactions():
-    """Player views their recharge/deduction history"""
     user_id = int(get_jwt_identity())
     txs = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.timestamp.desc()).all()
     return jsonify({
@@ -330,47 +319,282 @@ def get_transactions():
         'transactions': [tx.to_dict() for tx in txs]
     })
 
+
 @app.route('/api/wallet/deduct', methods=['POST'])
-@center_auth_required # 👈 Uses your existing center API key logic
+@center_auth_required
 def deduct_wallet():
-    """
-    Called by the Local Host PC when a gaming session ends.
-    Payload: { "username": "player1", "amount": 5.0, "duration_minutes": 60 }
-    """
     data = request.get_json() or {}
     username = data.get('username')
     amount = data.get('amount')
     duration = data.get('duration_minutes', 0)
-    
+
     if not username or not amount:
         return jsonify({'error': 'username and amount required'}), 400
-        
+
     user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({'error': 'Player not found in cloud'}), 404
-        
+
     if user.wallet_balance < amount:
         return jsonify({'error': 'Insufficient funds', 'balance': user.wallet_balance}), 402
-        
-    # Deduct
+
     user.wallet_balance -= amount
-    
-    # Log
+
     tx = Transaction(
         user_id=user.id,
         amount=amount,
         type='session_deduction',
         description=f'Gaming session ({duration} mins)'
     )
-    
+
     db.session.add(tx)
     db.session.commit()
-    
+
     return jsonify({
         'status': 'ok',
         'new_balance': user.wallet_balance,
         'message': 'Session deducted successfully'
     })
+
+
+# ─────────────────────────────────────────────────────────────
+# 👇 NEW: PLANS & SUBSCRIPTIONS
+# ─────────────────────────────────────────────────────────────
+
+@app.route('/api/plans', methods=['GET'])
+def list_plans():
+    """Public — list all active plans."""
+    plans = Plan.query.filter_by(is_active=True).order_by(Plan.price_per_month).all()
+    return jsonify({
+        'status': 'ok',
+        'plans': [p.to_dict() for p in plans]
+    })
+
+
+@app.route('/api/subscription/me', methods=['GET'])
+@jwt_required()
+def my_subscription():
+    """Player views their current active subscription."""
+    user_id = int(get_jwt_identity())
+    sub = Subscription.query.filter_by(
+        user_id=user_id, is_active=True
+    ).order_by(Subscription.expires_at.desc()).first()
+
+    if not sub:
+        return jsonify({'status': 'ok', 'subscription': None})
+
+    if sub.expires_at < datetime.utcnow():
+        sub.is_active = False
+        db.session.commit()
+        return jsonify({'status': 'ok', 'subscription': None})
+
+    return jsonify({'status': 'ok', 'subscription': sub.to_dict()})
+
+
+@app.route('/api/subscription/subscribe', methods=['POST'])
+@jwt_required()
+def subscribe():
+    """Player subscribes to a plan. Deducts from wallet."""
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
+
+    data = request.get_json() or {}
+    plan_id = data.get('plan_id')
+    if not plan_id:
+        return jsonify({'error': 'plan_id required'}), 400
+
+    plan = Plan.query.get(plan_id)
+    if not plan or not plan.is_active:
+        return jsonify({'error': 'plan not found or inactive'}), 404
+
+    if user.wallet_balance < plan.price_per_month:
+        return jsonify({
+            'error': 'Insufficient balance',
+            'required': plan.price_per_month,
+            'available': user.wallet_balance
+        }), 402
+
+    # Deactivate any existing subscription
+    Subscription.query.filter_by(user_id=user_id, is_active=True).update({'is_active': False})
+
+    now = datetime.utcnow()
+    sub = Subscription(
+        user_id=user_id,
+        plan_id=plan_id,
+        started_at=now,
+        expires_at=now + timedelta(days=30),
+        hours_remaining=plan.included_hours,
+        is_active=True,
+    )
+    db.session.add(sub)
+
+    user.wallet_balance -= plan.price_per_month
+
+    tx = Transaction(
+        user_id=user_id,
+        amount=-plan.price_per_month,
+        type='subscription',
+        description=f'Subscription: {plan.name} plan ({plan.included_hours}h included)'
+    )
+    db.session.add(tx)
+
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'subscription': sub.to_dict(),
+        'new_balance': user.wallet_balance
+    })
+
+
+@app.route('/api/subscription/consume', methods=['POST'])
+@jwt_required()
+def consume_subscription():
+    """
+    Called when a session ends.
+    Deducts plan hours first, then charges wallet with the plan's discount.
+    """
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
+
+    data = request.get_json() or {}
+    duration_minutes = float(data.get('duration_minutes', 0))
+    base_price_per_minute = float(data.get('price_per_minute', 0.10))
+
+    if duration_minutes <= 0:
+        return jsonify({'error': 'duration_minutes must be > 0'}), 400
+
+    sub = Subscription.query.filter_by(
+        user_id=user_id, is_active=True
+    ).order_by(Subscription.expires_at.desc()).first()
+
+    if sub and sub.expires_at < datetime.utcnow():
+        sub.is_active = False
+        db.session.commit()
+        sub = None
+
+    plan_name = 'Free / Guest'
+    discount_percent = 0
+    hours_from_plan = 0.0
+    hours_from_wallet = duration_minutes / 60.0
+
+    if sub and sub.plan:
+        plan_name = sub.plan.name
+        discount_percent = sub.plan.discount_percent
+
+        available_hours = sub.hours_remaining or 0.0
+        hours_needed = duration_minutes / 60.0
+        hours_from_plan = min(available_hours, hours_needed)
+        hours_from_wallet = hours_needed - hours_from_plan
+
+        sub.hours_remaining = available_hours - hours_from_plan
+        db.session.commit()
+
+    base_cost = hours_from_wallet * 60 * base_price_per_minute
+    discounted_cost = base_cost * (1 - discount_percent / 100.0)
+
+    if discounted_cost > 0:
+        user.wallet_balance -= discounted_cost
+        tx = Transaction(
+            user_id=user_id,
+            amount=-discounted_cost,
+            type='session_deduction',
+            description=f'Session ({duration_minutes:.0f}min) — {plan_name}'
+                        + (f' -{discount_percent}%' if discount_percent else '')
+        )
+        db.session.add(tx)
+
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'plan_name': plan_name,
+        'hours_from_plan': round(hours_from_plan, 2),
+        'hours_from_wallet': round(hours_from_wallet, 2),
+        'discount_percent': discount_percent,
+        'cost': round(discounted_cost, 2),
+        'new_balance': user.wallet_balance,
+        'hours_remaining': sub.hours_remaining if sub else 0.0,
+    })
+
+
+# ─────────────────────────────────────────────────────────────
+# Admin: Manage Plans
+# ─────────────────────────────────────────────────────────────
+
+@app.route('/api/admin/plans', methods=['GET'])
+@admin_required
+def admin_list_plans():
+    plans = Plan.query.order_by(Plan.price_per_month).all()
+    return jsonify({'status': 'ok', 'plans': [p.to_dict() for p in plans]})
+
+
+@app.route('/api/admin/plans', methods=['POST'])
+@admin_required
+def admin_create_plan():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({'error': 'name required'}), 400
+
+    if Plan.query.filter_by(name=name).first():
+        return jsonify({'error': 'plan name already exists'}), 409
+
+    plan = Plan(
+        name=name,
+        price_per_month=float(data.get('price_per_month', 0)),
+        included_hours=float(data.get('included_hours', 0)),
+        discount_percent=int(data.get('discount_percent', 0)),
+        color=data.get('color', 'gray'),
+        description=data.get('description', ''),
+        is_active=bool(data.get('is_active', True)),
+    )
+    db.session.add(plan)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'plan': plan.to_dict()}), 201
+
+
+@app.route('/api/admin/plans/<int:plan_id>', methods=['PUT'])
+@admin_required
+def admin_update_plan(plan_id):
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({'error': 'plan not found'}), 404
+
+    data = request.get_json() or {}
+    if 'name' in data: plan.name = data['name']
+    if 'price_per_month' in data: plan.price_per_month = float(data['price_per_month'])
+    if 'included_hours' in data: plan.included_hours = float(data['included_hours'])
+    if 'discount_percent' in data: plan.discount_percent = int(data['discount_percent'])
+    if 'color' in data: plan.color = data['color']
+    if 'description' in data: plan.description = data['description']
+    if 'is_active' in data: plan.is_active = bool(data['is_active'])
+
+    db.session.commit()
+    return jsonify({'status': 'ok', 'plan': plan.to_dict()})
+
+
+@app.route('/api/admin/plans/<int:plan_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_plan(plan_id):
+    plan = Plan.query.get(plan_id)
+    if not plan:
+        return jsonify({'error': 'plan not found'}), 404
+
+    plan.is_active = False
+    db.session.commit()
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/admin/subscriptions', methods=['GET'])
+@admin_required
+def admin_list_subscriptions():
+    subs = Subscription.query.order_by(Subscription.started_at.desc()).all()
+    return jsonify({'status': 'ok', 'subscriptions': [s.to_dict() for s in subs]})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -416,7 +640,6 @@ def sync_center(center_id):
 @app.route('/api/sync/center/<center_id>/reservations', methods=['GET'])
 @center_auth_required
 def sync_reservations(center_id):
-    """Local server pulls reservations changed since `since` (ISO timestamp)."""
     since_str = request.args.get('since')
     q = Reservation.query.filter_by(center_id=center_id)
     if since_str:
@@ -433,49 +656,71 @@ def sync_reservations(center_id):
         'reservations': [r.to_dict() for r in rows],
     })
 
+
 # ─────────────────────────────────────────────────────────────
-# Admin Endpoints (Users Management)
+# Admin: Users Management
 # ─────────────────────────────────────────────────────────────
 
 @app.route('/api/admin/users', methods=['GET'])
-@admin_required   # 👈 Only admins can access this
+@admin_required
 def admin_list_users():
-    """Admin fetches all users with their wallet balances."""
+    """Admin fetches all users with wallet balances AND active plan."""
     users = User.query.order_by(User.created_at.desc()).all()
-    return jsonify({
-        'status': 'ok',
-        'users': [u.to_dict() for u in users]  # to_dict() already includes wallet_balance
-    })
+    result = []
+
+    for u in users:
+        user_dict = u.to_dict()
+
+        # Attach active subscription
+        sub = Subscription.query.filter_by(
+            user_id=u.id, is_active=True
+        ).order_by(Subscription.expires_at.desc()).first()
+
+        if sub and sub.expires_at >= datetime.utcnow():
+            user_dict['plan_name'] = sub.plan.name if sub.plan else 'Free / Guest'
+            user_dict['plan_color'] = sub.plan.color if sub.plan else 'gray'
+            user_dict['hours_remaining'] = sub.hours_remaining or 0
+        else:
+            user_dict['plan_name'] = 'Free / Guest'
+            user_dict['plan_color'] = 'gray'
+            user_dict['hours_remaining'] = 0
+
+        result.append(user_dict)
+
+    return jsonify({'status': 'ok', 'users': result})
 
 
 @app.route('/api/admin/users/<int:user_id>', methods=['GET'])
 @admin_required
 def admin_get_user(user_id):
-    """Admin fetches a specific user's details + transactions."""
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
     txs = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.timestamp.desc()).all()
-    
+
+    sub = Subscription.query.filter_by(
+        user_id=user_id, is_active=True
+    ).order_by(Subscription.expires_at.desc()).first()
+
     return jsonify({
         'status': 'ok',
         'user': user.to_dict(),
-        'transactions': [tx.to_dict() for tx in txs]
+        'transactions': [tx.to_dict() for tx in txs],
+        'subscription': sub.to_dict() if sub else None,
     })
 
 
 @app.route('/api/admin/users/<int:user_id>/topup', methods=['POST'])
 @admin_required
 def admin_topup_user(user_id):
-    """Admin can manually add funds to a user's wallet (e.g., cash payment at the counter)."""
     user = User.query.get(user_id)
     if not user:
         return jsonify({'error': 'User not found'}), 404
 
     data = request.get_json() or {}
     amount = data.get('amount')
-    
+
     if not amount or not isinstance(amount, (int, float)) or amount <= 0:
         return jsonify({'error': 'Valid positive amount is required'}), 400
 
@@ -494,12 +739,14 @@ def admin_topup_user(user_id):
         'message': 'Wallet topped up',
         'new_balance': user.wallet_balance
     })
+
+
 # ─────────────────────────────────────────────────────────────
 # Bootstrap
 # ─────────────────────────────────────────────────────────────
 
 def ensure_seed():
-    """Create default admin / player accounts for testing."""
+    """Create default accounts + default plans (TND)."""
     if not User.query.filter_by(username='admin').first():
         db.session.add(User(
             username='admin',
@@ -512,8 +759,46 @@ def ensure_seed():
             username='player1',
             password_hash=bcrypt.generate_password_hash('player123').decode(),
             role='player',
-            wallet_balance=50.0 # Give the test player some starting money
+            wallet_balance=50.0
         ))
+
+    # ─── Default plans (TND) ───
+    if not Plan.query.filter_by(name='Free / Guest').first():
+        db.session.add_all([
+            Plan(
+                name='Free / Guest',
+                price_per_month=0.0,
+                included_hours=0.0,
+                discount_percent=0,
+                color='gray',
+                description='Payez à la session — pas d\'abonnement'
+            ),
+            Plan(
+                name='Basic',
+                price_per_month=50.0,
+                included_hours=5.0,
+                discount_percent=10,
+                color='silver',
+                description='5h incluses + 10% de réduction membre'
+            ),
+            Plan(
+                name='Premium',
+                price_per_month=100.0,
+                included_hours=15.0,
+                discount_percent=20,
+                color='gold',
+                description='15h incluses + 20% de réduction + réservation prioritaire'
+            ),
+            Plan(
+                name='Pro Gamer',
+                price_per_month=200.0,
+                included_hours=40.0,
+                discount_percent=30,
+                color='platinum',
+                description='40h incluses + 30% de réduction + accès tournois + VIP'
+            ),
+        ])
+
     db.session.commit()
 
 
