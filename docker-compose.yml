@@ -77,7 +77,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8003
+      - NEXT_PUBLIC_LOCAL_API_URL=http://localhost:8003
+      - NEXT_PUBLIC_CLOUD_API_URL=https://premium-mayflower-precut.ngrok-free.dev
     depends_on:
       - local
     networks:
