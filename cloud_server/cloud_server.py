@@ -345,7 +345,7 @@ def book_and_pay_reservation():
     }), 201
 
 
-@app.route('/api/reservations/<int:rid>/cancel', methods=['POST'])
+@app.route('/api/reservations/<rid>/cancel', methods=['POST'])
 @jwt_required()
 def cancel_reservation(rid):
     user_id = int(get_jwt_identity())

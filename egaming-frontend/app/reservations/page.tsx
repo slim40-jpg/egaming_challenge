@@ -5,6 +5,14 @@ import { useRouter } from 'next/navigation';
 import { cloud, getAuthToken } from '@/lib/api';
 import toast from 'react-hot-toast';
 
+
+const STATUS_LABELS: Record<string, string> = {
+  paid: 'Payée',
+  accepted: 'Réservée',
+  cancelled: 'Annulée',
+  refunded: 'Remboursée',
+};
+
 export default function MyReservations() {
   const router = useRouter();
   const [rows, setRows] = useState<any[]>([]);
@@ -28,17 +36,30 @@ export default function MyReservations() {
       setLoading(false);
     }
   };
-
-  const cancel = async (id: number) => {
+  const cancel = async (id: string) => {
     if (!confirm('Annuler cette réservation ?')) return;
     try {
-      await cloud.cancelReservation(id);
-      toast.success('Annulée');
+      const res = await cloud.cancelReservation(id);
+      const refund = res.data?.refund;
+      if (refund?.refunded) {
+        toast.success(
+          `Annulée — ${refund.amount.toFixed(2)} TND remboursés. Nouveau solde : ${refund.new_balance.toFixed(2)} TND`
+        );
+      } else if (refund && !refund.refunded) {
+        toast(
+          `Annulée — ${refund.reason || 'Aucun remboursement'}`,
+          { icon: '⚠️' }
+        );
+      } else {
+        toast.success('Annulée');
+      }
       load();
-    } catch {
-      toast.error('Erreur');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.error || 'Erreur');
     }
   };
+
+  
 
   if (loading) return <div className="min-h-screen bg-[#0a0a1a] p-6 text-gray-400">Chargement…</div>;
 
@@ -65,7 +86,7 @@ export default function MyReservations() {
                   </div>
                   <div
                     className={`text-xs mt-1 ${
-                      r.status === 'accepted'
+                      r.status === 'accepted' || r.status === 'paid'
                         ? 'text-green-400'
                         : r.status === 'cancelled'
                         ? 'text-red-400'
@@ -75,7 +96,8 @@ export default function MyReservations() {
                     {r.status}
                   </div>
                 </div>
-                {r.status === 'accepted' && (
+
+                {(r.status === 'accepted' || r.status === 'paid') && (
                   <button
                     onClick={() => cancel(r.id)}
                     className="text-red-400 hover:underline text-sm"

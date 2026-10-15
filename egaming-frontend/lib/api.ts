@@ -65,8 +65,15 @@ export const cloud = {
       start_time: start,
       end_time: end,
     }),
+  bookAndPay: (pcId: string, start: string, end: string) =>
+    cloudApi.post('/api/reservations/book-and-pay', {
+      pc_id: pcId,
+      start_time: start,
+      end_time: end,
+    }),
+ 
 
-  cancelReservation: (id: number) =>
+  cancelReservation: (id: string) =>
     cloudApi.post(`/api/reservations/${id}/cancel`),
 
   getWallet: () => cloudApi.get('/api/wallet'),

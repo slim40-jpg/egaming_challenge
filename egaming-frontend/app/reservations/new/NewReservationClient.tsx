@@ -1,4 +1,4 @@
-// app/reservations/new/page.tsx
+// app/reservations/new/NewReservationClient.tsx
 
 'use client';
 
@@ -26,6 +26,7 @@ export default function NewReservationPage() {
 
   const [pcs, setPCs] = useState<PCMirror[]>([]);
   const [loading, setLoading] = useState(false);
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [formData, setFormData] = useState({
     pc_id: preselectedPcId,
     start_time: '',
@@ -39,6 +40,7 @@ export default function NewReservationPage() {
       return;
     }
     fetchPCs();
+    fetchWallet();
   }, [router]);
 
   const fetchPCs = async () => {
@@ -51,6 +53,15 @@ export default function NewReservationPage() {
     }
   };
 
+  const fetchWallet = async () => {
+    try {
+      const res = await cloud.getWallet();
+      setWalletBalance(res.data?.wallet?.balance ?? 0);
+    } catch (error: any) {
+      console.error('Failed to fetch wallet:', error);
+    }
+  };
+
   // Compute duration in minutes for a live estimate
   const durationMinutes = (() => {
     if (!formData.start_time || !formData.end_time) return 0;
@@ -60,7 +71,9 @@ export default function NewReservationPage() {
     return Math.floor((e - s) / 60000);
   })();
 
-  const estimatedCost = (durationMinutes * 0.10).toFixed(2);
+  const estimatedCost = parseFloat((durationMinutes * 0.10).toFixed(2));
+  const hasEnoughFunds =
+    walletBalance !== null && walletBalance >= estimatedCost;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,39 +91,47 @@ export default function NewReservationPage() {
         return;
       }
 
-      // 1. Availability check
-      const availRes = await cloud.availability(
-        formData.pc_id,
-        formData.start_time,
-        formData.end_time
-      );
-
-      if (!availRes.data?.available) {
-        toast.error('PC non disponible sur ce créneau');
+      if (!hasEnoughFunds) {
+        toast.error(
+          `Solde insuffisant : ${estimatedCost.toFixed(2)} TND requis, ${(
+            walletBalance ?? 0
+          ).toFixed(2)} TND disponibles`
+        );
         setLoading(false);
         return;
       }
 
-      // 2. Create reservation
-      const createRes = await cloud.createReservation(
+      // Book & pay in one atomic operation
+      const res = await cloud.bookAndPay(
         formData.pc_id,
         formData.start_time,
         formData.end_time
       );
 
-      if (createRes.data?.status === 'ok') {
-        toast.success('✅ Réservation créée');
+      if (res.data?.status === 'ok') {
+        const pay = res.data.payment;
+        toast.success(
+          `✅ Réservation payée — ${pay.final_cost.toFixed(2)} TND débités. Nouveau solde : ${pay.new_balance.toFixed(2)} TND`
+        );
         router.push('/reservations');
       } else {
-        toast.error(createRes.data?.message || 'Erreur de création');
+        toast.error(res.data?.message || 'Erreur de création');
       }
     } catch (error: any) {
-      console.error('Create reservation error:', error);
-      const msg =
-        error?.response?.data?.error ||
-        error?.response?.data?.message ||
-        'Erreur lors de la création';
-      toast.error(msg);
+      console.error('Book-and-pay error:', error);
+      const status = error?.response?.status;
+      const data = error?.response?.data;
+      if (status === 402) {
+        toast.error(
+          `Fonds insuffisants. Il manque ${data?.missing?.toFixed(2) ?? '?'} TND.`
+        );
+      } else if (status === 409) {
+        toast.error('Ce créneau est déjà réservé.');
+      } else {
+        toast.error(
+          data?.error || data?.message || 'Erreur lors de la réservation'
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -157,7 +178,7 @@ export default function NewReservationPage() {
                       : pc.state === 'reserved'
                       ? '🟡'
                       : pc.state === 'in_session'
-                      ? '🔵'
+                      ? '🔴'
                       : pc.state === 'maintenance'
                       ? '🔧'
                       : '⚫';
@@ -226,7 +247,7 @@ export default function NewReservationPage() {
               />
             </div>
 
-            {/* Estimate */}
+            {/* Estimate + wallet */}
             <div className="bg-[#0f0f23] rounded-lg p-4">
               <div className="flex justify-between text-sm">
                 <span className="text-gray-500">Tarif</span>
@@ -239,28 +260,60 @@ export default function NewReservationPage() {
                 </span>
               </div>
               <div className="flex justify-between text-sm mt-1">
-                <span className="text-gray-500">Total estimé</span>
+                <span className="text-gray-500">Total à payer</span>
                 <span className="text-[#e94560] font-bold">
-                  {durationMinutes > 0 ? `${estimatedCost} dt` : '—'}
+                  {durationMinutes > 0 ? `${estimatedCost.toFixed(2)} TND` : '—'}
                 </span>
               </div>
+              <div className="flex justify-between text-sm mt-1 pt-2 border-t border-[#2a2a4a]">
+                <span className="text-gray-500">Votre solde</span>
+                <span
+                  className={`font-bold ${
+                    hasEnoughFunds ? 'text-green-400' : 'text-red-400'
+                  }`}
+                >
+                  {walletBalance !== null
+                    ? `${walletBalance.toFixed(2)} TND`
+                    : '…'}
+                </span>
+              </div>
+              {walletBalance !== null &&
+                durationMinutes > 0 &&
+                walletBalance < estimatedCost && (
+                  <div className="text-xs text-red-400 mt-2">
+                    ⚠️ Solde insuffisant — rechargez votre portefeuille
+                  </div>
+                )}
               {durationMinutes > 0 && durationMinutes < 30 && (
                 <div className="text-xs text-red-400 mt-2">
                   ⚠️ Durée minimum : 30 minutes
                 </div>
               )}
             </div>
-            
+
             <button
               type="submit"
-              disabled={loading || durationMinutes < 30}
+              disabled={
+                loading || durationMinutes < 30 || !hasEnoughFunds
+              }
               className="w-full bg-[#e94560] text-white py-3 rounded-lg font-semibold hover:bg-[#c73652] transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? '⏳ Création…' : '🚀 Réserver'}
+              {loading
+                ? '⏳ Traitement…'
+                : '🚀 Réserver et payer'}
             </button>
+
+            {!hasEnoughFunds && walletBalance !== null && (
+              <Link
+                href="/profil"
+                className="block text-center text-sm text-[#e94560] hover:underline"
+              >
+                Recharger mon portefeuille →
+              </Link>
+            )}
           </form>
         </div>
       </div>
     </div>
   );
-}   
+}
