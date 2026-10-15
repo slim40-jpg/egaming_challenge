@@ -1,7 +1,5 @@
 # docker-compose.yml
 
-version: '3.8'
-
 services:
   # PostgreSQL Database
   db:
@@ -12,10 +10,9 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=gaming_house
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     networks:
       - gaming-network
     healthcheck:
@@ -42,6 +39,7 @@ services:
         condition: service_healthy
     networks:
       - gaming-network
+
   # Local Server (Gaming Center)
   local:
     build:
@@ -67,18 +65,22 @@ services:
       - gaming-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
   # Frontend
   frontend:
     build:
       context: ./egaming-frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_LOCAL_API_URL: http://localhost:8003
+        NEXT_PUBLIC_CLOUD_API_URL: https://surreal-tiptoeing-departed.ngrok-free.dev
     container_name: gaming-frontend
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_LOCAL_API_URL=http://localhost:8003
-      - NEXT_PUBLIC_CLOUD_API_URL=https://premium-mayflower-precut.ngrok-free.dev
+      - NEXT_PUBLIC_CLOUD_API_URL=https://surreal-tiptoeing-departed.ngrok-free.dev
     depends_on:
       - local
     networks:
@@ -90,7 +92,7 @@ services:
     container_name: gaming-ngrok
     restart: unless-stopped
     ports:
-      - "4040:4040"  # ngrok web interface
+      - "4040:4040"
     environment:
       - NGROK_AUTHTOKEN=${NGROK_AUTH_TOKEN}
     command:

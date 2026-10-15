@@ -277,6 +277,7 @@ def get_wallet():
     })
 
 
+
 @app.route('/api/wallet/recharge', methods=['POST'])
 @jwt_required()
 def recharge_wallet():
@@ -295,7 +296,8 @@ def recharge_wallet():
         user_id=user.id,
         amount=amount,
         type='recharge',
-        description=f'Cloud recharge of {amount} TND'
+        description=f'Cloud recharge of {amount} TND',
+        balance_after=user.wallet_balance
     )
 
     db.session.add(tx)
@@ -313,10 +315,26 @@ def recharge_wallet():
 @jwt_required()
 def get_transactions():
     user_id = int(get_jwt_identity())
-    txs = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.timestamp.desc()).all()
+    tx_type = request.args.get('type')
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 20))
+    per_page = min(per_page, 100)
+
+    q = Transaction.query.filter_by(user_id=user_id)
+    if tx_type:
+        q = q.filter_by(type=tx_type)
+    q = q.order_by(Transaction.timestamp.desc())
+
+    pagination = q.paginate(page=page, per_page=per_page, error_out=False)
     return jsonify({
         'status': 'ok',
-        'transactions': [tx.to_dict() for tx in txs]
+        'transactions': [tx.to_dict() for tx in pagination.items],
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': pagination.total,
+            'pages': pagination.pages
+        }
     })
 
 
@@ -344,7 +362,8 @@ def deduct_wallet():
         user_id=user.id,
         amount=amount,
         type='session_deduction',
-        description=f'Gaming session ({duration} mins)'
+        description=f'Gaming session ({duration} mins)',
+        balance_after=user.wallet_balance
     )
 
     db.session.add(tx)
@@ -354,6 +373,50 @@ def deduct_wallet():
         'status': 'ok',
         'new_balance': user.wallet_balance,
         'message': 'Session deducted successfully'
+    })
+@app.route('/api/admin/wallet/adjust', methods=['POST'])
+@jwt_required()
+def admin_adjust_wallet():
+    """Admin manually adjusts a user's wallet balance (positive or negative)."""
+    admin_id = int(get_jwt_identity())
+    admin = User.query.get(admin_id)
+    if not admin or admin.role != 'admin':
+        return jsonify({'error': 'admin only'}), 403
+
+    data = request.get_json() or {}
+    username = data.get('username')
+    amount = data.get('amount')
+    reason = data.get('reason')
+
+    if not username or amount is None or not reason:
+        return jsonify({'error': 'username, amount, and reason are required'}), 400
+    if not isinstance(amount, (int, float)) or amount == 0:
+        return jsonify({'error': 'amount must be a non-zero number'}), 400
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
+
+    new_balance = user.wallet_balance + amount
+    if new_balance < 0:
+        return jsonify({'error': 'adjustment would make balance negative'}), 400
+
+    user.wallet_balance = new_balance
+    tx = Transaction(
+        user_id=user.id,
+        amount=amount,
+        type='admin_adjustment',
+        description=f'Admin adjustment: {reason}',
+        balance_after=new_balance,
+        created_by=admin.username
+    )
+    db.session.add(tx)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'new_balance': new_balance,
+        'transaction': tx.to_dict()
     })
 
 
