@@ -5,7 +5,7 @@ import axios from 'axios';
 export const CLOUD_URL = process.env.NEXT_PUBLIC_CLOUD_API_URL!;
 export const LOCAL_URL = process.env.NEXT_PUBLIC_LOCAL_API_URL!;
 
-// ─── Token helper ────────────────────────────────────────
+// ─────────────── Token helper ───────────────
 export function getAuthToken(): string | null {
   if (typeof window === 'undefined') return null;
   return (
@@ -15,7 +15,7 @@ export function getAuthToken(): string | null {
   );
 }
 
-// ─── Cloud client (public, ngrok) ────────────────────────
+// ─────────────── Cloud client (public, ngrok) ───────────────
 export const cloudApi = axios.create({ baseURL: CLOUD_URL });
 
 cloudApi.interceptors.request.use((config) => {
@@ -26,7 +26,7 @@ cloudApi.interceptors.request.use((config) => {
   return config;
 });
 
-// ─── Local client (LAN only) ─────────────────────────────
+// ─────────────── Local client (LAN only) ───────────────
 export const localApi = axios.create({ baseURL: LOCAL_URL });
 
 localApi.interceptors.request.use((config) => {
@@ -35,7 +35,7 @@ localApi.interceptors.request.use((config) => {
   return config;
 });
 
-// ─── Cloud calls ─────────────────────────────────────────
+// ─────────────── Cloud calls ───────────────
 export const cloud = {
   login: (username: string, password: string) =>
     cloudApi.post('/api/auth/login', { username, password }),
@@ -70,22 +70,28 @@ export const cloud = {
     cloudApi.post(`/api/reservations/${id}/cancel`),
 
   getWallet: () => cloudApi.get('/api/wallet'),
-  
-  rechargeWallet: (amount: number) => 
+
+  rechargeWallet: (amount: number) =>
     cloudApi.post('/api/wallet/recharge', { amount }),
-  
+
   getTransactions: () => cloudApi.get('/api/wallet/transactions'),
+
   adminListUsers: () => cloudApi.get('/api/admin/users'),
   adminGetUser: (userId: number) => cloudApi.get(`/api/admin/users/${userId}`),
-  adminTopupUser: (userId: number, amount: number) => 
+  adminTopupUser: (userId: number, amount: number) =>
     cloudApi.post(`/api/admin/users/${userId}/topup`, { amount }),
+
+  // ═══════════ NEW: manual wallet adjustment ═══════════
+  adminAdjustWallet: (username: string, amount: number, reason: string) =>
+    cloudApi.post('/api/admin/wallet/adjust', { username, amount, reason }),
+
   listPlans: () => cloudApi.get('/api/plans'),
   mySubscription: () => cloudApi.get('/api/subscription/me'),
   subscribe: (planId: number) =>
     cloudApi.post('/api/subscription/subscribe', { plan_id: planId }),
 };
 
-// ─── Local calls (admin only) ────────────────────────────
+// ─────────────── Local calls (admin only) ───────────────
 export const local = {
   pcDetail: (pcId: string) => localApi.get(`/api/pc/${pcId}`),
   pcGames: (pcId: string) => localApi.get(`/api/pc/${pcId}/games`),
