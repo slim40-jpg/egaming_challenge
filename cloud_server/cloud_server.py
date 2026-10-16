@@ -9,7 +9,6 @@ from flask_jwt_extended import (
 from flask_bcrypt import Bcrypt
 from dotenv import load_dotenv
 
-# 👇 Updated: include Plan and Subscription
 from models import db, User, PCMirror, Reservation, Transaction, Plan, Subscription
 
 load_dotenv()
@@ -155,7 +154,7 @@ def availability():
 
     conflict = Reservation.query.filter(
         Reservation.pc_id == pc_id,
-        Reservation.status == 'accepted',
+        Reservation.status.in_(['accepted', 'paid']),
         Reservation.start_time < end_dt,
         Reservation.end_time > start_dt,
     ).first()
@@ -215,7 +214,7 @@ def create_reservation():
 
     conflict = Reservation.query.filter(
         Reservation.pc_id == pc_id,
-        Reservation.status == 'accepted',
+        Reservation.status.in_(['accepted', 'paid']),
         Reservation.start_time < end_dt,
         Reservation.end_time > start_dt,
     ).first()
@@ -238,7 +237,115 @@ def create_reservation():
     return jsonify({'status': 'ok', 'reservation': r.to_dict()}), 201
 
 
-@app.route('/api/reservations/<int:rid>/cancel', methods=['POST'])
+@app.route('/api/reservations/book-and-pay', methods=['POST'])
+@jwt_required()
+def book_and_pay_reservation():
+    """
+    Book a PC AND pay for it from the user's wallet in one atomic operation.
+    Applies the user's active subscription discount if any.
+    Returns 402 if the wallet has insufficient funds.
+    """
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
+
+    data = request.get_json() or {}
+    pc_id = data.get('pc_id')
+    start = data.get('start_time')
+    end = data.get('end_time')
+    center_id = data.get('center_id', 'main')
+
+    if not pc_id or not start or not end:
+        return jsonify({'error': 'pc_id, start_time, and end_time are required'}), 400
+
+    try:
+        start_dt = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
+        end_dt = datetime.fromisoformat(end.replace('Z', '+00:00')).replace(tzinfo=None)
+    except Exception:
+        return jsonify({'error': 'Invalid datetime format'}), 400
+
+    if end_dt <= start_dt:
+        return jsonify({'error': 'end_time must be after start_time'}), 400
+
+    duration_minutes = (end_dt - start_dt).total_seconds() / 60.0
+    if duration_minutes < 30:
+        return jsonify({'error': 'Minimum booking duration is 30 minutes'}), 400
+
+    pc = PCMirror.query.filter_by(center_id=center_id, pc_id=pc_id).first()
+    if not pc:
+        return jsonify({'error': 'PC not found'}), 404
+    if pc.state == 'maintenance':
+        return jsonify({'error': 'PC is under maintenance'}), 400
+
+    conflict = Reservation.query.filter(
+        Reservation.pc_id == pc_id,
+        Reservation.status.in_(['accepted', 'paid']),
+        Reservation.start_time < end_dt,
+        Reservation.end_time > start_dt,
+    ).first()
+    if conflict:
+        return jsonify({'error': 'PC is not available in that time slot'}), 409
+
+    base_price_per_minute = 0.10
+    base_cost = duration_minutes * base_price_per_minute
+
+    sub = Subscription.query.filter_by(user_id=user_id, is_active=True).first()
+    discount_percent = 0
+    plan_name = 'Free / Guest'
+    if sub and sub.expires_at and sub.expires_at >= datetime.utcnow():
+        plan_name = sub.plan.name if sub.plan else 'Free / Guest'
+        discount_percent = sub.plan.discount_percent if sub.plan else 0
+
+    final_cost = round(base_cost * (1 - discount_percent / 100.0), 2)
+
+    if user.wallet_balance < final_cost:
+        return jsonify({
+            'error': 'Insufficient funds',
+            'required': final_cost,
+            'balance': user.wallet_balance,
+            'missing': round(final_cost - user.wallet_balance, 2),
+        }), 402
+
+    user.wallet_balance = round(user.wallet_balance - final_cost, 2)
+
+    r = Reservation(
+        id=os.urandom(16).hex(),
+        user_name=user.username,
+        user_email=user.email,
+        center_id=center_id,
+        pc_id=pc_id,
+        start_time=start_dt,
+        end_time=end_dt,
+        status='paid',
+    )
+    db.session.add(r)
+
+    tx = Transaction(
+        user_id=user.id,
+        amount=-final_cost,
+        type='session_reservation',
+        description=f'Booking {pc_id} · {duration_minutes:.0f}min · {plan_name}'
+                    + (f' (-{discount_percent}%)' if discount_percent else ''),
+        balance_after=user.wallet_balance,
+    )
+    db.session.add(tx)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'reservation': r.to_dict(),
+        'payment': {
+            'base_cost': round(base_cost, 2),
+            'discount_percent': discount_percent,
+            'final_cost': final_cost,
+            'new_balance': user.wallet_balance,
+        },
+        'transaction': tx.to_dict(),
+    }), 201
+
+
+@app.route('/api/reservations/<rid>/cancel', methods=['POST'])
 @jwt_required()
 def cancel_reservation(rid):
     user_id = int(get_jwt_identity())
@@ -251,9 +358,56 @@ def cancel_reservation(rid):
     if r.user_email != user.email and claims.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
 
+    if r.status not in ('accepted', 'paid'):
+        return jsonify({'error': f'cannot cancel reservation with status {r.status}'}), 400
+
+    was_paid = (r.status == 'paid')
     r.status = 'cancelled'
+
+    refund_info = None
+    if was_paid:
+        duration_minutes = (r.end_time - r.start_time).total_seconds() / 60.0
+        base_cost = duration_minutes * 0.10
+
+        sub = Subscription.query.filter_by(user_id=user.id, is_active=True).first()
+        discount_percent = 0
+        if sub and sub.expires_at and sub.expires_at >= datetime.utcnow():
+            discount_percent = sub.plan.discount_percent if sub.plan else 0
+
+        refund_amount = round(base_cost * (1 - discount_percent / 100.0), 2)
+
+        now = datetime.utcnow()
+        hours_until_start = (r.start_time - now).total_seconds() / 3600.0
+
+        if hours_until_start >= 1.0:
+            user.wallet_balance = round(user.wallet_balance + refund_amount, 2)
+            tx = Transaction(
+                user_id=user.id,
+                amount=refund_amount,
+                type='refund',
+                description=f'Refund for cancelled booking {r.pc_id}',
+                balance_after=user.wallet_balance,
+            )
+            db.session.add(tx)
+            refund_info = {
+                'refunded': True,
+                'amount': refund_amount,
+                'new_balance': user.wallet_balance,
+                'reason': 'Cancelled more than 1 hour before start',
+            }
+        else:
+            refund_info = {
+                'refunded': False,
+                'reason': 'Cancelled less than 1 hour before start — no refund',
+            }
+
     db.session.commit()
-    return jsonify({'status': 'ok', 'reservation': r.to_dict()})
+
+    return jsonify({
+        'status': 'ok',
+        'reservation': r.to_dict(),
+        'refund': refund_info,
+    })
 
 
 # ─────────────────────────────────────────────────────────────
@@ -295,7 +449,8 @@ def recharge_wallet():
         user_id=user.id,
         amount=amount,
         type='recharge',
-        description=f'Cloud recharge of {amount} TND'
+        description=f'Cloud recharge of {amount} TND',
+        balance_after=user.wallet_balance
     )
 
     db.session.add(tx)
@@ -313,10 +468,26 @@ def recharge_wallet():
 @jwt_required()
 def get_transactions():
     user_id = int(get_jwt_identity())
-    txs = Transaction.query.filter_by(user_id=user_id).order_by(Transaction.timestamp.desc()).all()
+    tx_type = request.args.get('type')
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 20))
+    per_page = min(per_page, 100)
+
+    q = Transaction.query.filter_by(user_id=user_id)
+    if tx_type:
+        q = q.filter_by(type=tx_type)
+    q = q.order_by(Transaction.timestamp.desc())
+
+    pagination = q.paginate(page=page, per_page=per_page, error_out=False)
     return jsonify({
         'status': 'ok',
-        'transactions': [tx.to_dict() for tx in txs]
+        'transactions': [tx.to_dict() for tx in pagination.items],
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': pagination.total,
+            'pages': pagination.pages
+        }
     })
 
 
@@ -344,7 +515,8 @@ def deduct_wallet():
         user_id=user.id,
         amount=amount,
         type='session_deduction',
-        description=f'Gaming session ({duration} mins)'
+        description=f'Gaming session ({duration} mins)',
+        balance_after=user.wallet_balance
     )
 
     db.session.add(tx)
@@ -357,8 +529,54 @@ def deduct_wallet():
     })
 
 
+@app.route('/api/admin/wallet/adjust', methods=['POST'])
+@jwt_required()
+def admin_adjust_wallet():
+    """Admin manually adjusts a user's wallet balance (positive or negative)."""
+    admin_id = int(get_jwt_identity())
+    admin = User.query.get(admin_id)
+    if not admin or admin.role != 'admin':
+        return jsonify({'error': 'admin only'}), 403
+
+    data = request.get_json() or {}
+    username = data.get('username')
+    amount = data.get('amount')
+    reason = data.get('reason')
+
+    if not username or amount is None or not reason:
+        return jsonify({'error': 'username, amount, and reason are required'}), 400
+    if not isinstance(amount, (int, float)) or amount == 0:
+        return jsonify({'error': 'amount must be a non-zero number'}), 400
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'error': 'user not found'}), 404
+
+    new_balance = user.wallet_balance + amount
+    if new_balance < 0:
+        return jsonify({'error': 'adjustment would make balance negative'}), 400
+
+    user.wallet_balance = new_balance
+    tx = Transaction(
+        user_id=user.id,
+        amount=amount,
+        type='admin_adjustment',
+        description=f'Admin adjustment: {reason}',
+        balance_after=new_balance,
+        created_by=admin.username
+    )
+    db.session.add(tx)
+    db.session.commit()
+
+    return jsonify({
+        'status': 'ok',
+        'new_balance': new_balance,
+        'transaction': tx.to_dict()
+    })
+
+
 # ─────────────────────────────────────────────────────────────
-# 👇 NEW: PLANS & SUBSCRIPTIONS
+# PLANS & SUBSCRIPTIONS
 # ─────────────────────────────────────────────────────────────
 
 @app.route('/api/plans', methods=['GET'])
@@ -416,7 +634,6 @@ def subscribe():
             'available': user.wallet_balance
         }), 402
 
-    # Deactivate any existing subscription
     Subscription.query.filter_by(user_id=user_id, is_active=True).update({'is_active': False})
 
     now = datetime.utcnow()
@@ -436,7 +653,8 @@ def subscribe():
         user_id=user_id,
         amount=-plan.price_per_month,
         type='subscription',
-        description=f'Subscription: {plan.name} plan ({plan.included_hours}h included)'
+        description=f'Subscription: {plan.name} plan ({plan.included_hours}h included)',
+        balance_after=user.wallet_balance
     )
     db.session.add(tx)
 
@@ -504,7 +722,8 @@ def consume_subscription():
             amount=-discounted_cost,
             type='session_deduction',
             description=f'Session ({duration_minutes:.0f}min) — {plan_name}'
-                        + (f' -{discount_percent}%' if discount_percent else '')
+                        + (f' -{discount_percent}%' if discount_percent else ''),
+            balance_after=user.wallet_balance
         )
         db.session.add(tx)
 
@@ -656,6 +875,65 @@ def sync_reservations(center_id):
         'reservations': [r.to_dict() for r in rows],
     })
 
+@app.route('/api/sync/center/<center_id>/users', methods=['GET'])
+@center_auth_required
+def sync_users(center_id):
+    """
+    Return users created/updated since `since` (ISO timestamp).
+    Used by the local server to keep its users table in sync with the cloud.
+    """
+    since_str = request.args.get('since')
+    q = User.query
+    if since_str:
+        try:
+            since_dt = datetime.fromisoformat(since_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            q = q.filter(User.created_at >= since_dt)
+        except ValueError:
+            return jsonify({'error': 'invalid since format'}), 400
+
+    users = q.order_by(User.created_at.asc()).all()
+    return jsonify({
+        'status': 'ok',
+        'server_time': datetime.utcnow().isoformat(),
+        'users': [
+            {
+                'id': str(u.id),
+                'username': u.username,
+                'email': u.email,
+                'password_hash': u.password_hash,
+                'role': u.role,
+                'wallet_balance': u.wallet_balance,
+                'created_at': u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in users
+        ],
+    })
+
+@app.route('/api/sync/center/<center_id>/pcs', methods=['GET'])
+@center_auth_required
+def sync_pcs(center_id):
+    """
+    Return all PCs for a center. Used by the local server to keep its local
+    pcs table in sync with the cloud (needed for reservation FK integrity).
+    """
+    pcs = PCMirror.query.filter_by(center_id=center_id).all()
+    return jsonify({
+        'status': 'ok',
+        'server_time': datetime.utcnow().isoformat(),
+        'pcs': [
+            {
+                'id': p.pc_id,
+                'pc_id': p.pc_id,
+                'hostname': p.name,
+                'state': p.state,
+                'online': p.online,
+                'installed_games': p.installed_games or [],
+                'last_sync': p.last_sync.isoformat() if p.last_sync else None,
+            }
+            for p in pcs
+        ],
+    })
+
 
 # ─────────────────────────────────────────────────────────────
 # Admin: Users Management
@@ -671,7 +949,6 @@ def admin_list_users():
     for u in users:
         user_dict = u.to_dict()
 
-        # Attach active subscription
         sub = Subscription.query.filter_by(
             user_id=u.id, is_active=True
         ).order_by(Subscription.expires_at.desc()).first()
@@ -729,7 +1006,9 @@ def admin_topup_user(user_id):
         user_id=user.id,
         amount=amount,
         type='recharge',
-        description=f'Manual cash top-up by admin'
+        description=f'Manual cash top-up by admin',
+        balance_after=user.wallet_balance,
+        created_by='admin'
     )
     db.session.add(tx)
     db.session.commit()
@@ -762,7 +1041,6 @@ def ensure_seed():
             wallet_balance=50.0
         ))
 
-    # ─── Default plans (TND) ───
     if not Plan.query.filter_by(name='Free / Guest').first():
         db.session.add_all([
             Plan(

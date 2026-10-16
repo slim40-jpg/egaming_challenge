@@ -27,25 +27,7 @@ class User(db.Model):
         }
 
 
-# 👇 NEW: Transaction Model for Audit Logging
-class Transaction(db.Model):
-    __tablename__ = 'transactions'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    amount = db.Column(db.Float, nullable=False)
-    type = db.Column(db.String(20), nullable=False)  # 'recharge' or 'session_deduction'
-    description = db.Column(db.String(200))
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'user_id': self.user_id,
-            'amount': self.amount,
-            'type': self.type,
-            'description': self.description,
-            'timestamp': self.timestamp.isoformat()
-        }
 
 
 class PCMirror(db.Model):
@@ -156,4 +138,27 @@ class Subscription(db.Model):
             'expires_at': self.expires_at.isoformat() if self.expires_at else None,
             'hours_remaining': self.hours_remaining,
             'is_active': self.is_active,
-        }    
+        }   
+
+class Transaction(db.Model):
+    __tablename__ = 'transactions'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    type = db.Column(db.String(30), nullable=False)  # recharge | session_deduction | subscription | admin_adjustment | refund
+    description = db.Column(db.String(200))
+    balance_after = db.Column(db.Float, nullable=True)   # NEW
+    created_by = db.Column(db.String(80), nullable=True) # NEW: admin username for admin_adjustment
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'amount': self.amount,
+            'type': self.type,
+            'description': self.description,
+            'balance_after': self.balance_after,
+            'created_by': self.created_by,
+            'timestamp': self.timestamp.isoformat()
+        }  

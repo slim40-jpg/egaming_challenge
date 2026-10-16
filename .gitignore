@@ -72,3 +72,6 @@ htmlcov/
 *.zip
 *.tar
 *.tar.gz.env
+
+*.bak
+docker-compose.yml.bak
