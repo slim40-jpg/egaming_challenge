@@ -875,6 +875,65 @@ def sync_reservations(center_id):
         'reservations': [r.to_dict() for r in rows],
     })
 
+@app.route('/api/sync/center/<center_id>/users', methods=['GET'])
+@center_auth_required
+def sync_users(center_id):
+    """
+    Return users created/updated since `since` (ISO timestamp).
+    Used by the local server to keep its users table in sync with the cloud.
+    """
+    since_str = request.args.get('since')
+    q = User.query
+    if since_str:
+        try:
+            since_dt = datetime.fromisoformat(since_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            q = q.filter(User.created_at >= since_dt)
+        except ValueError:
+            return jsonify({'error': 'invalid since format'}), 400
+
+    users = q.order_by(User.created_at.asc()).all()
+    return jsonify({
+        'status': 'ok',
+        'server_time': datetime.utcnow().isoformat(),
+        'users': [
+            {
+                'id': str(u.id),
+                'username': u.username,
+                'email': u.email,
+                'password_hash': u.password_hash,
+                'role': u.role,
+                'wallet_balance': u.wallet_balance,
+                'created_at': u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in users
+        ],
+    })
+
+@app.route('/api/sync/center/<center_id>/pcs', methods=['GET'])
+@center_auth_required
+def sync_pcs(center_id):
+    """
+    Return all PCs for a center. Used by the local server to keep its local
+    pcs table in sync with the cloud (needed for reservation FK integrity).
+    """
+    pcs = PCMirror.query.filter_by(center_id=center_id).all()
+    return jsonify({
+        'status': 'ok',
+        'server_time': datetime.utcnow().isoformat(),
+        'pcs': [
+            {
+                'id': p.pc_id,
+                'pc_id': p.pc_id,
+                'hostname': p.name,
+                'state': p.state,
+                'online': p.online,
+                'installed_games': p.installed_games or [],
+                'last_sync': p.last_sync.isoformat() if p.last_sync else None,
+            }
+            for p in pcs
+        ],
+    })
+
 
 # ─────────────────────────────────────────────────────────────
 # Admin: Users Management
